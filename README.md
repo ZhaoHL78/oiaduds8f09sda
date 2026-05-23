@@ -105,6 +105,7 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 - 尝试过 `band_only + flip_y`，但整体匹配效果比 weighted 版本差，因此已将默认模式回退为 `weighted + auto`。
 - 新增 README 维护规范：后续代码改动必须同步更新“目前实现的方法”和“版本改动”。
 - 新增 `.gitignore`，后续只上传代码和文档，不上传数据、输出图、缓存、模型权重。
+- 将已被 Git 跟踪的输出图、缓存、日志和示例图片从 Git 跟踪中移除；本地文件保留，GitHub 只保留代码和文档。
 
 ### 2026-05-22
 
