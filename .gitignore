@@ -1,0 +1,41 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Local environments
+.venv/
+.venv-*/
+venv/
+env/
+
+# Generated outputs and logs
+outputs/
+runs/
+*.log
+*.tmp
+
+# EBSD data and large binary artifacts
+*.edaxh5
+*.h5
+*.hdf5
+*.up2
+*.ang
+*.ctf
+*.dream3d
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Notebook/runtime noise
+.ipynb_checkpoints/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
