@@ -62,6 +62,12 @@
 - 同时搜索 `pcz` 的 radius scale，用于模拟投影半径或 detector distance 的标定偏差。
 - 支持单张 pattern 校正和 10 组 batch 校正。
 - CPU 版与 GPU 版都保留；GPU 版使用 PyTorch CUDA 加速局部 PC/radius 搜索。
+- 新增基于 HKL label 一致性的半径精配准原型：
+  - EDAX OHP 数据中每条 band 只有 `rho/theta/width/intensity`，当前文件没有逐条 band 的直接 HKL label。
+  - 从 H5 phase header 读取 HKL families，例如 FCC phase 的 `(111)/(200)/(220)/(311)`。
+  - 将检测到的 H5 OHP band 投影到 master sphere 后，根据最接近的 HKL family 推断 label。
+  - 半径搜索的 loss 同时包含原来的 pattern/master 匹配分数，以及同一 HKL family 的 band 法向一致性。
+  - 对 10 组 Area1 high pattern 的全局半径汇总显示，平均 composite score 最高在 `radius_scale=1.00`，说明当前 H5 `pcz` 不需要明显全局缩放；单张 pattern 的 radius 最优值变化更多是在补偿局部姿态或匹配误差。
 - 当前推荐使用 GPU weighted 恢复版本：
 
 ```powershell
@@ -83,18 +89,24 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 - `pc_radius_bias_correction.py`
 - `batch_pc_radius_bias_correction.py`
 - `batch_pc_radius_bias_correction_gpu.py`
+- `labeled_band_radius_refinement.py`
 
 ### 6. 可视化输出
 
 - 输出 raw pattern / preprocessed pattern 在高分辨率 Kikuchi sphere 上的最终空间匹配结果。
 - 输出 PC/radius 搜索的 score landscape。
 - 输出 batch contact sheet，方便横向检查多组 pattern。
+- 输出 H5 OHP band 的 inferred HKL label overlay，以及 transformed H5 band 与同 HKL 标准球大圆的对齐图。
+- 最终空间匹配图中，pattern patch 只有很小的显示用 surface lift，避免视觉上误判为物理半径不同；真实投影张角由 `pcz/radius_scale` 决定。
 - 可视化输出默认写入 `outputs/`，不上传 GitHub。
 
 ## 版本改动
 
 ### 2026-05-23
 
+- 新增 `labeled_band_radius_refinement.py`，尝试用 HKL family label 一致性增强半径精配准。
+- 将最终空间匹配可视化中的 pattern surface lift 从 `1.018` 调小到 `1.006`；这是显示层参数，不参与 loss，避免误判菊池球半径与 pattern 投影半径不一致。
+- 使用 10 组 Area1 high pattern 测试 labeled radius refinement：per-pattern 局部搜索有小幅 score 提升，但全局半径汇总最优仍为 `radius_scale=1.00`。
 - 移除全局 DIC 式 PC/radius refinement 原型；该模块对当前 Kikuchi sphere 匹配帮助不稳定，暂不作为本仓库方法保留。
 - 新增 GPU 版 PC/radius batch 校正脚本 `batch_pc_radius_bias_correction_gpu.py`。
 - GPU 版使用 PyTorch CUDA 加速局部候选参数搜索，环境为 `D:\anaconda3\envs\torch\python.exe`。

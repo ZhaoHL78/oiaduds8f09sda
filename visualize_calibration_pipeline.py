@@ -289,7 +289,10 @@ def plot_matched_patch_on_master(
         title,
         curves=transformed_band_curves(result),
         draw_reference_sphere=False,
-        radius_scale=1.018,
+        # Display-only lift to keep the overlaid pattern from z-fighting with
+        # the master sphere. The physical projection radius is controlled by
+        # PCz/radius_scale in the matching code, not by this plotting factor.
+        radius_scale=1.006,
     )
 
 
