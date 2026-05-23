@@ -84,17 +84,38 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 - `batch_pc_radius_bias_correction.py`
 - `batch_pc_radius_bias_correction_gpu.py`
 
-### 6. 可视化输出
+### 6. 全局 DIC 式 PC/radius 校正原型
+
+- 参考论文 `Global DIC-based sample-detector geometry refinement for accurate EBSD indexing` 的思路，新增多张 pattern 的全局残差场校正原型。
+- 先用当前 weighted + H5 band 增强方法获得每张 pattern 的初始空间匹配。
+- 将 master sphere 渲染回 detector plane，与实验 pattern 的 band / contrast 特征做局部 DIC 光流匹配。
+- 将多张 pattern 的局部位移残差平均，用有限差分估计 `pcx / pcy / pcz radius scale` 的灵敏度。
+- 使用阻尼最小二乘求全局 PC/radius 更新，并用 line search 判断是否接受更新。
+- 当前结论：
+  - 可信子集上可以得到小幅 PC/radius 修正，并降低平均 DIC 残差。
+  - 混入明显错误初始匹配后，平均残差场会被污染，line search 会倾向于拒绝更新。
+  - 该方法暂时作为实验原型保留，后续需要加入初始匹配质量筛选、DIC outlier rejection，以及可能的 detector/sample tilt 参数后，再作为默认校正方法。
+
+主要代码：
+
+- `global_dic_pc_refinement.py`
+
+### 7. 可视化输出
 
 - 输出 raw pattern / preprocessed pattern 在高分辨率 Kikuchi sphere 上的最终空间匹配结果。
 - 输出 PC/radius 搜索的 score landscape。
 - 输出 batch contact sheet，方便横向检查多组 pattern。
+- 输出全局 DIC 平均残差场、PC/radius 灵敏度场、line search 结果和校正前后 contact sheet。
 - 可视化输出默认写入 `outputs/`，不上传 GitHub。
 
 ## 版本改动
 
 ### 2026-05-23
 
+- 新增 `global_dic_pc_refinement.py`，用于尝试论文中的全局 DIC 几何 refinement 思路。
+- 新脚本支持从多张 pattern 建立平均 DIC 位移残差场，有限差分估计 `pcx / pcy / radius scale` 灵敏度，并用阻尼最小二乘 + line search 给出全局更新。
+- 对 5 张相对可信的 Area1 pattern 测试时，平均 DIC 残差从 `8.313 px` 降到 `8.105 px`，对应修正约为 `dx=-1.33 px, dy=-2.06 px, radius_scale=0.9931`。
+- 对 10 张 linspace 样本测试时，混入错误初始匹配会导致 line search 选择不更新，说明后续必须先做可靠匹配筛选和 outlier rejection。
 - 新增 GPU 版 PC/radius batch 校正脚本 `batch_pc_radius_bias_correction_gpu.py`。
 - GPU 版使用 PyTorch CUDA 加速局部候选参数搜索，环境为 `D:\anaconda3\envs\torch\python.exe`。
 - 新增 `--match-mode` 参数：
