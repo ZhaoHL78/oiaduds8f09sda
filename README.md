@@ -60,6 +60,12 @@
   - 不让网络直接生成图像，而是让网络生成配准参数；每一步用可微球面采样实时计算 image line、H5 band、intensity 和同 HKL family band geometry loss，再通过 AdamW 梯度下降。
   - 默认 PC 不参与优化，只做旋转和半径微调；需要测试 PC 时可加 `--optimize-pc`。
   - 保存 `hyperparameters.json`、DIP loss trace、候选 checkpoint 评估、逐条 band residual 对比、HKL label 对齐图和最终空间匹配图。
+- 新增霍夫点匹配与三维空间还原：
+  - H5 OHP band 本身已经是霍夫检测结果，脚本将每条 band 规范化为 detector Hough space 中的点 `(theta, rho)`。
+  - 对候选旋转、`radius_scale` 和可选 PC 偏移，将同 HKL family 的标准 Kikuchi 球晶面法向反投影回 detector，得到预测 Hough 点。
+  - loss 使用 observed/predicted Hough 点的 `theta/rho` 残差，加上同 HKL family band 法向角残差；先做多起点粗搜索，再做连续 least-squares。
+  - 默认保留 match score guard，防止纯霍夫点几何跳到“点更近但整张图明显错”的匹配。
+  - 使用最终参数沿每条 detector band 采样点，并投影回 master sphere，输出三维点坐标 CSV 与 3D 可视化。
 
 主要代码：
 
@@ -68,6 +74,7 @@
 - `visualize_calibration_pipeline.py`
 - `continuous_band_geometric_refinement.py`
 - `dip_parametric_registration.py`
+- `hough_point_spatial_reconstruction.py`
 
 ### 5. Pattern center 与投影半径偏差校正
 
@@ -125,6 +132,10 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 - DIP 默认超参数包括 `steps=350`、`lr=2e-3`、`rotation_bound_deg=6`、`radius_min=0.98`、`radius_max=1.02`、`residual_points=1600`，loss 权重为 image line `1.0`、H5 band `0.8`、intensity `0.15`、band geometry `0.6`。
 - DIP 也使用 match score guard，默认最终 full match score 不能比初始值下降超过 `0.02`。
 - 使用 GPU 跑 10 组 Area1 high pattern 测试时，9/10 组逐条 band 平均角误差下降；平均 band angle gain 约 `0.206 deg`，平均 match score change 约 `-0.0058`，无样本超过 `0.02` 的 score drop，平均 rotation delta 约 `0.717 deg`，平均 `radius_scale=1.00003`。
+- 新增 `hough_point_spatial_reconstruction.py`，将 H5 OHP Kikuchi bands 转成霍夫点后进行几何匹配，并用匹配参数还原 band 的三维球面坐标。
+- 霍夫点匹配默认超参数包括 `hough_random_starts=180`、`rotation_bound_deg=6`、`radius_min=0.98`、`radius_max=1.02`、`theta_scale_deg=2.5`、`rho_scale_fraction=0.025`、`band_angle_scale_deg=8`。
+- 该脚本默认只接受没有超过 `max_match_score_drop=0.03` 的霍夫点解；如果没有更好的可接受解，会回退到受保护的初始匹配，避免错误三维还原。
+- 使用 10 组 Area1 high pattern 测试霍夫点匹配：平均 `theta` 误差降低约 `0.379 deg`，平均 `rho` 误差降低约 `1.05 px`，同 HKL band 法向角误差降低约 `0.347 deg`，平均 match score change 约 `-0.0059`，没有样本超过 `0.03` 的 score drop。
 - 新增 `labeled_band_radius_refinement.py`，尝试用 HKL family label 一致性增强半径精配准。
 - 将最终空间匹配可视化中的 pattern surface lift 从 `1.018` 调小到 `1.006`；这是显示层参数，不参与 loss，避免误判菊池球半径与 pattern 投影半径不一致。
 - 使用 10 组 Area1 high pattern 测试 labeled radius refinement：per-pattern 局部搜索有小幅 score 提升，但全局半径汇总最优仍为 `radius_scale=1.00`。
