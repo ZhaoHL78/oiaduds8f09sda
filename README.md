@@ -49,12 +49,19 @@
   - H5 OHP band response: `0.40`
 - 匹配时默认自动搜索 detector convention，避免手工固定错误坐标约定。
 - 纯 H5 band-only 匹配已经尝试过，但整体效果比 weighted 混合增强差，目前不作为默认方案。
+- 新增连续几何精配准：
+  - 以当前 H5-band-enhanced 匹配作为初始值。
+  - 使用 `scipy.optimize.least_squares` 连续优化小角度旋转增量和 `pcz/radius_scale`。
+  - loss 同时包含 master/pattern 的 band/intensity 残差，以及逐条 H5 OHP band 与同 HKL family 标准菊池带的角度残差。
+  - 默认开启 match score guard：最终解的整体匹配分数不能比初始值下降超过 `0.02`，避免为了压低 band 几何误差而破坏整张图匹配。
+  - 每个 pattern 会保存超参数、优化 trace、初始/最终逐条 band 角误差、中间曲线和最终可视化。
 
 主要代码：
 
 - `h5_band_enhanced_match.py`
 - `batch_final_spatial_visualizations.py`
 - `visualize_calibration_pipeline.py`
+- `continuous_band_geometric_refinement.py`
 
 ### 5. Pattern center 与投影半径偏差校正
 
@@ -104,6 +111,10 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 
 ### 2026-05-23
 
+- 新增 `continuous_band_geometric_refinement.py`，实现逐条 Kikuchi band 几何残差的连续优化匹配。
+- 连续优化变量包括旋转增量、`pcz/radius_scale`，可选小范围 `pcx/pcy`；默认只优化旋转和半径，PC 作为小范围可选项。
+- 新脚本记录主要超参数：初始随机匹配参数、预处理参数、least-squares 迭代参数、旋转/半径/PC bounds、loss 权重、match score guard。
+- 对 10 组 Area1 high pattern 测试时，9/10 组逐条 band 平均角误差下降；平均 band angle gain 约 `0.19 deg`，平均 rotation delta 约 `0.55 deg`，平均 `radius_scale=0.99975`。
 - 新增 `labeled_band_radius_refinement.py`，尝试用 HKL family label 一致性增强半径精配准。
 - 将最终空间匹配可视化中的 pattern surface lift 从 `1.018` 调小到 `1.006`；这是显示层参数，不参与 loss，避免误判菊池球半径与 pattern 投影半径不一致。
 - 使用 10 组 Area1 high pattern 测试 labeled radius refinement：per-pattern 局部搜索有小幅 score 提升，但全局半径汇总最优仍为 `radius_scale=1.00`。
