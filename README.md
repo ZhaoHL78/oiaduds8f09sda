@@ -66,6 +66,15 @@
   - loss 使用 observed/predicted Hough 点的 `theta/rho` 残差，加上同 HKL family band 法向角残差；先做多起点粗搜索，再做连续 least-squares。
   - 默认保留 match score guard，防止纯霍夫点几何跳到“点更近但整张图明显错”的匹配。
   - 使用最终参数沿每条 detector band 采样点，并投影回 master sphere，输出三维点坐标 CSV 与 3D 可视化。
+- 新增球面霍夫点的空间膨胀/收缩迭代匹配：
+  - 将 detector Hough 直线 `x cos(theta) + y sin(theta) = rho` 反投影为穿过电子束源点的三维平面。
+  - 该平面与单位 Kikuchi 球相交为大圆；对应的球面霍夫点为该大圆的单位法向：
+    `n_h = normalize([a, b, c / D_eff])`。
+  - 空间膨胀系数定义为 `s`，有效 detector distance 为 `D_eff = D / s`，等价于 `PCz_eff = PCz / s`；`s > 1` 表示角张量膨胀，`s < 1` 表示收缩。
+  - 已验证解析球面霍夫点与 endpoint cross-product 几何法得到的法向一致，验证图中角差接近 `0 deg`。
+  - 迭代流程为 `rotation match -> expansion/contract -> lr decay -> repeat`，每轮先做球面点旋转匹配，再调膨胀系数，逐步减小搜索半径直到收敛。
+  - loss 以同 HKL family 的球面霍夫点角距离为主，同时保留 full pattern match score guard，避免为了霍夫点更近而牺牲整张图的空间匹配。
+  - 输出公式验证图、球面霍夫点匹配图、膨胀迭代 trace、逐条 band 三维还原点和最终空间匹配图。
 
 主要代码：
 
@@ -75,6 +84,7 @@
 - `continuous_band_geometric_refinement.py`
 - `dip_parametric_registration.py`
 - `hough_point_spatial_reconstruction.py`
+- `spherical_hough_expansion_refinement.py`
 
 ### 5. Pattern center 与投影半径偏差校正
 
@@ -121,6 +131,18 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 - 可视化输出默认写入 `outputs/`，不上传 GitHub。
 
 ## 版本改动
+
+### 2026-05-24
+
+- 新增 `spherical_hough_expansion_refinement.py`，实现球面霍夫点的空间膨胀/收缩迭代匹配。
+- 推导并实现 detector Hough line 到球面霍夫点的解析映射：`x cos(theta) + y sin(theta) = rho` 先反投影为三维平面，再由 `n_h = normalize([a, b, c / D_eff])` 得到单位球面上的霍夫点。
+- 引入空间膨胀系数 `s`：`D_eff = D / s`，等价于 `PCz_eff = PCz / s`；该系数描述已知球面曲率下的角张量膨胀或收缩。
+- 增加曲率验证可视化：令 `u = |rho_pc| / D`，球面角距 `beta = atan(u)`，弦/弧尺度修正可写为 `a_curv(u) = u / atan(u)`。
+- 新脚本使用交替迭代策略：先在球面霍夫点空间优化旋转，再优化膨胀/收缩系数，每次迭代按 `lr_decay` 缩小搜索步长。
+- 输出 `00_formula_verification.png`、`02_initial_spherical_hough_points.png`、`04_alternating_expansion_trace.png`、`06_final_spherical_hough_points.png`、`09_reconstructed_band_points_3d.png` 和 `10_final_spatial_after_expansion.png` 等可视化。
+- 对 10 组 Area1 high pattern 测试时，10/10 组球面霍夫点角误差下降，平均下降约 `0.949 deg`；最终 `expansion` 平均约 `0.9903`，范围约 `0.9410-1.0245`。
+- 同一批测试中 full pattern match score 平均变化约 `-0.0298`，没有超过 `max_match_score_drop=0.03` 的保护阈值；说明该方法确实增强了 band geometry 对齐，但当前仍会用掉几乎全部 score guard，需要后续继续平衡图像匹配和 band 几何匹配。
+- 本次输出目录为 `outputs/spherical_hough_expansion_selected10_20260524/area1_high/`，输出图和 CSV 按规则不上传 GitHub。
 
 ### 2026-05-23
 
