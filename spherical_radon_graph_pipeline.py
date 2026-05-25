@@ -114,6 +114,7 @@ class CandidateOrientation:
     triplet_residual_deg: float
     fast_score: float
     ot_cost: float = float("inf")
+    edge_loss: float = float("inf")
     transported_mass: float = 0.0
     match_count: int = 0
     image_score: float = float("nan")
@@ -128,6 +129,7 @@ class CandidateOrientation:
             "triplet_residual_deg": float(self.triplet_residual_deg),
             "fast_score": float(self.fast_score),
             "ot_cost": float(self.ot_cost),
+            "edge_loss": float(self.edge_loss),
             "transported_mass": float(self.transported_mass),
             "match_count": int(self.match_count),
             "image_score": float(self.image_score),
@@ -202,6 +204,27 @@ def normalize_values(values: np.ndarray) -> np.ndarray:
     if hi <= lo:
         return np.zeros_like(values, dtype=np.float32)
     return np.clip((values - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
+
+
+def radon_kernel_weights(
+    distances: np.ndarray,
+    scale_deg: float,
+    kernel: str = "gaussian",
+    side_lobe_offset_factor: float = 1.65,
+    side_lobe_sigma_factor: float = 0.55,
+    side_lobe_weight: float = 0.55,
+) -> np.ndarray:
+    sigma = max(np.radians(scale_deg), 1e-5)
+    center = np.exp(-0.5 * (distances / sigma) ** 2).astype(np.float32)
+    if kernel == "gaussian":
+        return center
+    if kernel != "profiled":
+        raise ValueError(f"Unknown spherical Radon kernel: {kernel}")
+    offset = max(side_lobe_offset_factor * sigma, 1e-5)
+    side_sigma = max(side_lobe_sigma_factor * sigma, 1e-5)
+    side_pos = np.exp(-0.5 * ((distances - offset) / side_sigma) ** 2)
+    side_neg = np.exp(-0.5 * ((distances + offset) / side_sigma) ** 2)
+    return (center - side_lobe_weight * (side_pos + side_neg)).astype(np.float32)
 
 
 def sample_image_at_pixels(image: np.ndarray, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
@@ -367,6 +390,10 @@ def spherical_radon_transform(
     scales_deg: list[float],
     chunk_size: int = 256,
     desc: str = "spherical Radon",
+    kernel: str = "gaussian",
+    side_lobe_offset_factor: float = 1.65,
+    side_lobe_sigma_factor: float = 0.55,
+    side_lobe_weight: float = 0.55,
 ) -> SphericalRadonResult:
     vectors = vectors.astype(np.float32)
     normals = normals.astype(np.float32)
@@ -380,9 +407,15 @@ def spherical_radon_transform(
         dots = np.clip(vectors @ normals[start:stop].T, -1.0, 1.0)
         distances = np.abs(np.arcsin(dots)).astype(np.float32)
         for scale_index, scale_deg in enumerate(scales_deg):
-            sigma = max(np.radians(scale_deg), 1e-5)
-            weights = np.exp(-0.5 * (distances / sigma) ** 2).astype(np.float32)
-            denom = weights.sum(axis=0) + 1e-8
+            weights = radon_kernel_weights(
+                distances,
+                scale_deg,
+                kernel=kernel,
+                side_lobe_offset_factor=side_lobe_offset_factor,
+                side_lobe_sigma_factor=side_lobe_sigma_factor,
+                side_lobe_weight=side_lobe_weight,
+            )
+            denom = np.abs(weights).sum(axis=0) + 1e-8
             scores_by_scale[scale_index, start:stop] = (weights.T @ values) / denom
     best_scale_index = np.argmax(scores_by_scale, axis=0).astype(np.int32)
     best_scores = scores_by_scale[best_scale_index, np.arange(len(normals))]
@@ -641,6 +674,26 @@ def partial_optimal_transport(
     return plan, float(result.fun / max(mass, 1e-12))
 
 
+def transport_edge_loss(plan: np.ndarray, exp_peaks: list[PeakDescriptor], std_peaks: list[PeakDescriptor]) -> float:
+    mass = float(plan.sum())
+    if mass <= 1e-12:
+        return float("inf")
+    exp_edges = pairwise_angle_matrix(exp_peaks).astype(np.float64)
+    std_edges = pairwise_angle_matrix(std_peaks).astype(np.float64)
+    loss = 0.0
+    for i in range(plan.shape[0]):
+        row_i = plan[i]
+        if float(row_i.sum()) <= 1e-12:
+            continue
+        for k in range(plan.shape[0]):
+            row_k = plan[k]
+            pair_mass = np.outer(row_i, row_k)
+            if float(pair_mass.sum()) <= 1e-12:
+                continue
+            loss += float(np.sum(pair_mass * np.abs(exp_edges[i, k] - std_edges)))
+    return float(loss / (mass * mass + 1e-12))
+
+
 def extract_transport_matches(
     plan: np.ndarray,
     cost: np.ndarray,
@@ -783,6 +836,7 @@ def evaluate_candidates_with_ot(
     for candidate in iterator:
         cost, angle_deg = descriptor_cost_matrix(exp_peaks, std_peaks, candidate.rotation, args)
         plan, ot_cost = partial_optimal_transport(cost, exp_weights, std_weights, args.partial_transport_mass)
+        edge_loss = transport_edge_loss(plan, exp_peaks, std_peaks)
         matches = extract_transport_matches(
             plan,
             cost,
@@ -794,10 +848,16 @@ def evaluate_candidates_with_ot(
         )
         image_score = score_rotation(candidate.rotation, prepared.exp_points, prepared, master)
         candidate.ot_cost = float(ot_cost)
+        candidate.edge_loss = float(edge_loss)
         candidate.transported_mass = float(plan.sum())
         candidate.match_count = int(len(matches))
         candidate.image_score = float(image_score)
-        candidate.objective = float(ot_cost - args.candidate_image_score_weight * image_score - args.candidate_match_bonus * len(matches))
+        candidate.objective = float(
+            ot_cost
+            + args.ot_edge_weight * edge_loss
+            - args.candidate_image_score_weight * image_score
+            - args.candidate_match_bonus * len(matches)
+        )
         if best_candidate is None or candidate.objective < best_candidate.objective:
             best_candidate = candidate
             best_plan = plan
@@ -1397,6 +1457,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k-points", type=int, default=6500)
     parser.add_argument("--line-variant", default="auto")
     parser.add_argument("--radon-scales-deg", default="1.4,2.4,3.8")
+    parser.add_argument("--radon-kernel", choices=["gaussian", "profiled"], default="gaussian")
+    parser.add_argument("--radon-side-lobe-offset-factor", type=float, default=1.65)
+    parser.add_argument("--radon-side-lobe-sigma-factor", type=float, default=0.55)
+    parser.add_argument("--radon-side-lobe-weight", type=float, default=0.55)
     parser.add_argument("--normal-count", type=int, default=2600)
     parser.add_argument("--master-sample-count", type=int, default=9000)
     parser.add_argument("--experiment-sample-count", type=int, default=11000)
@@ -1427,6 +1491,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ot-bandwidth-weight", type=float, default=0.20)
     parser.add_argument("--ot-profile-weight", type=float, default=0.45)
     parser.add_argument("--ot-asymmetry-weight", type=float, default=0.12)
+    parser.add_argument("--ot-edge-weight", type=float, default=0.12)
     parser.add_argument("--candidate-image-score-weight", type=float, default=8.0)
     parser.add_argument("--candidate-match-bonus", type=float, default=0.02)
     parser.add_argument("--hkl-assign-max-angle-deg", type=float, default=10.0)
@@ -1527,6 +1592,10 @@ def main() -> None:
         scales,
         chunk_size=args.radon_chunk_size,
         desc="experimental spherical Radon",
+        kernel=args.radon_kernel,
+        side_lobe_offset_factor=args.radon_side_lobe_offset_factor,
+        side_lobe_sigma_factor=args.radon_side_lobe_sigma_factor,
+        side_lobe_weight=args.radon_side_lobe_weight,
     )
     std_radon = spherical_radon_transform(
         master_vectors,
@@ -1535,6 +1604,10 @@ def main() -> None:
         scales,
         chunk_size=args.radon_chunk_size,
         desc="master spherical Radon",
+        kernel=args.radon_kernel,
+        side_lobe_offset_factor=args.radon_side_lobe_offset_factor,
+        side_lobe_sigma_factor=args.radon_side_lobe_sigma_factor,
+        side_lobe_weight=args.radon_side_lobe_weight,
     )
 
     exp_peak_indices = greedy_peak_pick(
@@ -1687,6 +1760,11 @@ def main() -> None:
         "hyperparameters": {
             "experimental_transfer_source": args.experimental_transfer_source,
             "experimental_peak_source": args.experimental_peak_source,
+            "radon_kernel": args.radon_kernel,
+            "radon_side_lobe_offset_factor": float(args.radon_side_lobe_offset_factor),
+            "radon_side_lobe_sigma_factor": float(args.radon_side_lobe_sigma_factor),
+            "radon_side_lobe_weight": float(args.radon_side_lobe_weight),
+            "ot_edge_weight": float(args.ot_edge_weight),
             "h5_line_samples_per_band": int(args.h5_line_samples_per_band),
             "h5_line_offset_count": int(args.h5_line_offset_count),
             "h5_line_width_scale": float(args.h5_line_width_scale),

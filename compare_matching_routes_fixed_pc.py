@@ -55,6 +55,7 @@ from spherical_radon_graph_pipeline import (
     save_transport_matching,
     software_band_normals_for_pc,
     spherical_radon_transform,
+    transport_edge_loss,
 )
 from visualize_calibration_pipeline import (
     build_preprocessing_products,
@@ -325,6 +326,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sphere-lon-count", type=int, default=420)
     parser.add_argument("--sphere-colat-count", type=int, default=210)
     parser.add_argument("--radon-scales-deg", default="1.4,2.4,3.8")
+    parser.add_argument("--radon-kernel", choices=["gaussian", "profiled"], default="gaussian")
+    parser.add_argument("--radon-side-lobe-offset-factor", type=float, default=1.65)
+    parser.add_argument("--radon-side-lobe-sigma-factor", type=float, default=0.55)
+    parser.add_argument("--radon-side-lobe-weight", type=float, default=0.55)
     parser.add_argument("--normal-count", type=int, default=2200)
     parser.add_argument("--master-sample-count", type=int, default=8000)
     parser.add_argument("--experiment-sample-count", type=int, default=11000)
@@ -355,6 +360,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ot-bandwidth-weight", type=float, default=0.20)
     parser.add_argument("--ot-profile-weight", type=float, default=0.45)
     parser.add_argument("--ot-asymmetry-weight", type=float, default=0.12)
+    parser.add_argument("--ot-edge-weight", type=float, default=0.12)
     parser.add_argument("--candidate-image-score-weight", type=float, default=8.0)
     parser.add_argument("--candidate-match-bonus", type=float, default=0.02)
     parser.add_argument("--hkl-assign-max-angle-deg", type=float, default=10.0)
@@ -443,6 +449,10 @@ def main() -> None:
         scales,
         chunk_size=args.radon_chunk_size,
         desc="experimental spherical Radon",
+        kernel=args.radon_kernel,
+        side_lobe_offset_factor=args.radon_side_lobe_offset_factor,
+        side_lobe_sigma_factor=args.radon_side_lobe_sigma_factor,
+        side_lobe_weight=args.radon_side_lobe_weight,
     )
     std_radon = spherical_radon_transform(
         master_vectors,
@@ -451,6 +461,10 @@ def main() -> None:
         scales,
         chunk_size=args.radon_chunk_size,
         desc="master spherical Radon",
+        kernel=args.radon_kernel,
+        side_lobe_offset_factor=args.radon_side_lobe_offset_factor,
+        side_lobe_sigma_factor=args.radon_side_lobe_sigma_factor,
+        side_lobe_weight=args.radon_side_lobe_weight,
     )
     exp_peak_indices = greedy_peak_pick(
         exp_radon,
@@ -499,6 +513,7 @@ def main() -> None:
         args,
     )
     final_plan, final_matches, final_ot_cost = final_matches_for_rotation(graph_result.rotation, exp_peaks, std_peaks, args)
+    final_edge_loss = transport_edge_loss(final_plan, exp_peaks, std_peaks)
     save_transport_matching(
         final_plan,
         final_matches,
@@ -562,6 +577,7 @@ def main() -> None:
         "route_b_selected_candidate": selected_candidate.to_row(),
         "route_b_refinement": graph_refinement,
         "route_b_final_partial_ot_cost": float(final_ot_cost),
+        "route_b_final_edge_loss": float(final_edge_loss),
         "route_b_final_partial_ot_match_count": int(len(final_matches)),
         "orientation_difference_deg": float(orientation_difference),
         "experimental_transfer": transfer_info
@@ -575,6 +591,8 @@ def main() -> None:
             "pc_adjustment": "disabled; both routes use the H5 PC exactly",
             "experimental_transfer_source": args.experimental_transfer_source,
             "experimental_peak_source": args.experimental_peak_source,
+            "radon_kernel": args.radon_kernel,
+            "ot_edge_weight": float(args.ot_edge_weight),
             "radon_scales_deg": scales,
             "normal_count": int(args.normal_count),
             "coarse_rotations": int(args.coarse_rotations),

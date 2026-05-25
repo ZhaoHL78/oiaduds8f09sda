@@ -10,6 +10,8 @@
 - 从 UP2 文件中读取对应的原始菊池花样。
 - 当前 pattern center 使用 H5 中真实读取的 `X-Star / Y-Star / Z-Star`，不是虚拟值。
 - OHP band 数据按 8 条 band 读取，每条包含 `rho_bin / theta_deg / width / intensity`。
+- `ANG/DATA` 同时保存每个 pattern 的软件 indexing 结果，包括 `Orientations(9)`、`Phase`、`IQ`、`CI` 和 `Fit`。
+- 当前 EDAX H5 的 `OHP/DATA` 没有逐条 band 的直接 `{hkl}` label；若要直接使用软件 indexing 的晶面信息，需要用 `ANG/DATA/Orientations` 加 phase header 中的 HKL families 反推标准晶面在 detector / Kikuchi sphere 上的位置。
 
 主要代码：
 
@@ -90,6 +92,12 @@
   - `compare_matching_routes_fixed_pc.py` 同时运行旧 weighted image/band route 和新 spherical Radon peak-graph route。
   - 两条路线都严格使用 H5 中读取的 PC，不优化 `pcx/pcy/pcz`，只比较 orientation 和匹配策略差异。
   - 额外输出 H5/OHP 8 条软件 Kikuchi line 到 8 个球面 plane-normal Hough 点的解释图，并与 dense spherical Hough/Radon response 查询网格区分开。
+- 新增直接软件 HKL 定位脚本：
+  - `direct_hkl_sphere_localization.py` 不做 orientation 搜索，而是直接读取 H5 `ANG/DATA/Orientations` 和 phase HKL families。
+  - 对每个 HKL family 生成立方对称等价晶面法向，例如 FCC 的 `(111)/(200)/(220)/(311)`。
+  - 将晶面法向用软件 orientation 旋到 detector 坐标，再用当前 H5 PC 投影成 detector 上的预测 Kikuchi line，以及球面 plane-normal Hough 点。
+  - 输出 OHP 实测线与软件 orientation+HKL 预测线的 detector 叠加图、detector/crystal 两套球面 normal 点图，以及按软件 orientation 直接放到 master sphere 坐标中的 raw / enhanced pattern。
+  - 当前该路线的用途是检查“软件 indexing 给出的取向是否能解释 OHP band 的球面位置”，不是替代 full-pattern matching。
 
 主要代码：
 
@@ -102,6 +110,7 @@
 - `spherical_hough_expansion_refinement.py`
 - `spherical_radon_graph_pipeline.py`
 - `compare_matching_routes_fixed_pc.py`
+- `direct_hkl_sphere_localization.py`
 
 ### 5. Pattern center 与投影半径偏差校正
 
@@ -158,6 +167,8 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 - 峰描述符包括法向方向、峰强度、最佳带宽、横向 band profile 和 asymmetry。
 - 使用峰图的三角不变量生成 orientation 候选，再使用 partial optimal transport 进行全局峰匹配。
 - 当前 partial OT 使用 `scipy.optimize.linprog` 求解：实验峰和标准峰都有质量上限，只运输指定比例的总质量，因此允许缺峰、假峰和局部遮挡。
+- 参考球面 Radon / spherical convolution 文献后，新增可选 `--radon-kernel profiled`，用中心正响应加两侧负旁瓣近似带宽敏感 band profile；但对当前默认的稀疏 H5 软件线输入，消融显示该核会降低稳定性，所以默认仍使用 `--radon-kernel gaussian`。
+- 新增 `--ot-edge-weight`，在 partial OT 候选评分中加入峰图边结构一致性损失，惩罚匹配后两两法向角距离不一致的候选。
 - 在 OT 选出的候选上，联合优化 orientation、`pcx/pcy` 和 `pcz/radius_scale`；PC 更新时会重算软件线解析峰的球面法向，再回到原始球面 pattern 上以 image/band score 做局部 refinement。
 - 对 `area1_high idx=2661` 做了一次端到端尝试，输出目录为 `outputs/spherical_radon_graph_pipeline_plusradon_20260525/area1_high/idx_02661/`。
 - 该样本最终 phase 为 `Face Centered Cubic`，校正 PC 从 H5 的 `(0.52863, 0.59259, 0.61504)` 变为约 `(0.53207, 0.59219, 0.61307)`，最终 sphere score 约 `0.1974`，保留 13 个 partial OT 峰匹配和 `{hkl}` 解释。
@@ -166,6 +177,11 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 - 对 `area1_high idx=2661` 的固定 PC 对比结果：weighted image/band route 的 score 约 `0.3024`，spherical Radon peak-graph route 的 score 约 `0.2317`，新路线保留 `21` 个 partial OT 峰匹配。
 - 该对比同时输出 `01_hough_line_to_sphere_point_explanation.png`，说明 8 条 H5/OHP Kikuchi line 在球面 plane-normal Hough space 中对应 8 个真实峰点；而 `experimental spherical Hough/Radon response` 中的大量点只是 normal-grid 上的查询采样点，不是实际检测出的 band 数量。
 - 固定 PC 对比输出目录为 `outputs/fixed_pc_route_comparison_20260525/area1_high/idx_02661/`。
+- 参考 `EBSD球面霍夫.pdf` 对当前方法做对比：已有 pipeline 和图中方案都包含球面反投影、多尺度 spherical Hough/Radon、峰图、三角候选、partial OT 和局部 refinement；差异是当前实现使用直接采样网格和线性规划 OT，没有实现文献中的球谐/NFFT/Wigner-D 快速球面相关和连续梯度峰搜索。
+- 对 `area1_high idx=2661` 的 Radon kernel 消融：`profiled` 负旁瓣核在稀疏 H5 软件线输入上将 graph route score 拉低到约 `0.0371`；`gaussian + OT edge loss` 保持约 `0.2317`，因此默认回到 `gaussian`，保留 `profiled` 作为将来对连续球面强度图的实验选项。
+- 新增 `direct_hkl_sphere_localization.py`，直接使用 H5 `ANG/DATA/Orientations` 和 phase HKL families 判断 pattern 在 Kikuchi sphere 上的位置。
+- 对 `area1_high idx=2661` 的直接软件 HKL 定位结果：选择 `orientation_op=G_T`、`detector_convention=flip_xy` 后，8 条 OHP band 全部可与软件 orientation 预测的 HKL line 匹配，weighted mean plane-normal angle 约 `5.66 deg`，最大约 `12.00 deg`。
+- 直接 HKL 定位输出目录为 `outputs/direct_hkl_sphere_localization_20260525/area1_high/idx_02661/`，包含 detector 叠加图、球面 Hough 点图、pattern 直接投影到 master sphere 的可视化和逐条 band `{hkl}` 对应 CSV。
 
 ### 2026-05-24
 
