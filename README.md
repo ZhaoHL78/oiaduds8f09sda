@@ -86,6 +86,10 @@
   - 对候选 orientation 使用 partial optimal transport 做全局峰匹配；当前实现是带质量约束的线性规划 partial OT。
   - 在最佳候选基础上联合优化 orientation、`pcx/pcy` 偏移和 `pcz/radius_scale`；参与匹配的软件线峰会随 PC 更新重新计算球面法向。
   - 最终输出 orientation、phase、校正 PC、partial OT 匹配峰和对应 `{hkl}` 解释表。
+- 新增固定 PC 的路线对比脚本：
+  - `compare_matching_routes_fixed_pc.py` 同时运行旧 weighted image/band route 和新 spherical Radon peak-graph route。
+  - 两条路线都严格使用 H5 中读取的 PC，不优化 `pcx/pcy/pcz`，只比较 orientation 和匹配策略差异。
+  - 额外输出 H5/OHP 8 条软件 Kikuchi line 到 8 个球面 plane-normal Hough 点的解释图，并与 dense spherical Hough/Radon response 查询网格区分开。
 
 主要代码：
 
@@ -97,6 +101,7 @@
 - `hough_point_spatial_reconstruction.py`
 - `spherical_hough_expansion_refinement.py`
 - `spherical_radon_graph_pipeline.py`
+- `compare_matching_routes_fixed_pc.py`
 
 ### 5. Pattern center 与投影半径偏差校正
 
@@ -157,6 +162,10 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 - 对 `area1_high idx=2661` 做了一次端到端尝试，输出目录为 `outputs/spherical_radon_graph_pipeline_plusradon_20260525/area1_high/idx_02661/`。
 - 该样本最终 phase 为 `Face Centered Cubic`，校正 PC 从 H5 的 `(0.52863, 0.59259, 0.61504)` 变为约 `(0.53207, 0.59219, 0.61307)`，最终 sphere score 约 `0.1974`，保留 13 个 partial OT 峰匹配和 `{hkl}` 解释。
 - 当前限制：该结构化峰图方向已经跑通，但 final image score 仍低于原先 weighted image/band 匹配；下一步应加强 HKL family 一致性、晶体对称下的等价峰处理，以及 master 峰的高分辨率稳定提取。
+- 新增 `compare_matching_routes_fixed_pc.py` 做固定 PC 的两路线对比。
+- 对 `area1_high idx=2661` 的固定 PC 对比结果：weighted image/band route 的 score 约 `0.3024`，spherical Radon peak-graph route 的 score 约 `0.2317`，新路线保留 `21` 个 partial OT 峰匹配。
+- 该对比同时输出 `01_hough_line_to_sphere_point_explanation.png`，说明 8 条 H5/OHP Kikuchi line 在球面 plane-normal Hough space 中对应 8 个真实峰点；而 `experimental spherical Hough/Radon response` 中的大量点只是 normal-grid 上的查询采样点，不是实际检测出的 band 数量。
+- 固定 PC 对比输出目录为 `outputs/fixed_pc_route_comparison_20260525/area1_high/idx_02661/`。
 
 ### 2026-05-24
 
