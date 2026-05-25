@@ -78,11 +78,13 @@
 - 新增独立的球面 Radon 峰图匹配 pipeline：
   - 该方向暂时不沿用前一版半径膨胀/霍夫点微调逻辑，而是把实验 pattern 和 master sphere 都转换为球面函数后，在球面 plane-normal Hough/Radon 空间中匹配峰图。
   - 实验 pattern 先按 H5 PC 反投影到单位球面，master sphere 使用 EMsoft/kikuchipy master pattern 的 band response。
-  - 对实验球面和 master sphere 分别做多尺度大圆积分，得到 spherical Hough/Radon response。
-  - 在 plane-normal Hough space 中用非极大值抑制提取峰点；每个峰保存 `normal direction / peak strength / bandwidth / band profile / asymmetry` 描述符。
+  - 实验侧默认不再把整张图的 line-response 像素场直接作为 Radon 输入，而是沿 H5/OHP 软件标定出的 Kikuchi lines 采样，将这些线按 H5 PC 校正回球面后再做 spherical transfer。
+  - 软件线校正回球面后，本身可解析得到对应的 plane-normal Hough peak；当前默认峰源为 `software_lines_plus_radon`，即先使用软件线解析峰，再用球面 Radon 补充峰。
+  - 对实验球面和 master sphere 分别做多尺度大圆积分，得到 spherical Hough/Radon response，用于验证软件线峰和提取补充峰。
+  - 在 plane-normal Hough space 中提取峰点；每个峰保存 `normal direction / peak strength / bandwidth / band profile / asymmetry` 描述符。
   - 构建实验峰图和标准峰图，使用三角不变量生成候选 orientation。
   - 对候选 orientation 使用 partial optimal transport 做全局峰匹配；当前实现是带质量约束的线性规划 partial OT。
-  - 在最佳候选基础上联合优化 orientation、`pcx/pcy` 偏移和 `pcz/radius_scale`，然后回到原始球面 pattern 做局部 refinement。
+  - 在最佳候选基础上联合优化 orientation、`pcx/pcy` 偏移和 `pcz/radius_scale`；参与匹配的软件线峰会随 PC 更新重新计算球面法向。
   - 最终输出 orientation、phase、校正 PC、partial OT 匹配峰和对应 `{hkl}` 解释表。
 
 主要代码：
@@ -146,13 +148,15 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 
 - 新增 `spherical_radon_graph_pipeline.py`，实现新的球面 Radon 峰图匹配原型，不再以之前的空间膨胀/收缩版本作为主线。
 - 新 pipeline 对实验 pattern 和标准 master sphere 分别执行多尺度 spherical Hough/Radon transform，在 plane-normal Hough space 中提取峰点。
+- 修正实验 transfer 的输入：默认 `--experimental-transfer-source h5_lines`，即沿 H5/OHP 软件标定的 Kikuchi line 采样并校正回球面，而不是直接用整张图的 line-response 像素场。
+- 新增 `--experimental-peak-source`，默认 `software_lines_plus_radon`：软件线解析峰作为主峰，球面 Radon 峰作为补充峰；也可切换为 `software_lines` 或 `radon` 做消融。
 - 峰描述符包括法向方向、峰强度、最佳带宽、横向 band profile 和 asymmetry。
 - 使用峰图的三角不变量生成 orientation 候选，再使用 partial optimal transport 进行全局峰匹配。
 - 当前 partial OT 使用 `scipy.optimize.linprog` 求解：实验峰和标准峰都有质量上限，只运输指定比例的总质量，因此允许缺峰、假峰和局部遮挡。
-- 在 OT 选出的候选上，联合优化 orientation、`pcx/pcy` 和 `pcz/radius_scale`，再回到原始球面 pattern 上以 image/band score 做局部 refinement。
-- 对 `area1_high idx=2661` 做了一次端到端尝试，输出目录为 `outputs/spherical_radon_graph_try_20260525_v2/area1_high/idx_02661/`。
-- 该样本最终 phase 为 `Face Centered Cubic`，校正 PC 从 H5 的 `(0.52863, 0.59259, 0.61504)` 变为约 `(0.52697, 0.59524, 0.62151)`，最终 sphere score 约 `0.1971`，保留 6 个 partial OT 峰匹配和 `{hkl}` 解释。
-- 当前限制：实验 pattern 只是球面上的局部 patch，Radon 峰在可见视场附近聚集，峰匹配数量仍偏少；下一步应增加 antipodal/晶体对称约束、把峰 profile 与 master 局部带强度一起用于更稳定的 OT cost。
+- 在 OT 选出的候选上，联合优化 orientation、`pcx/pcy` 和 `pcz/radius_scale`；PC 更新时会重算软件线解析峰的球面法向，再回到原始球面 pattern 上以 image/band score 做局部 refinement。
+- 对 `area1_high idx=2661` 做了一次端到端尝试，输出目录为 `outputs/spherical_radon_graph_pipeline_plusradon_20260525/area1_high/idx_02661/`。
+- 该样本最终 phase 为 `Face Centered Cubic`，校正 PC 从 H5 的 `(0.52863, 0.59259, 0.61504)` 变为约 `(0.53207, 0.59219, 0.61307)`，最终 sphere score 约 `0.1974`，保留 13 个 partial OT 峰匹配和 `{hkl}` 解释。
+- 当前限制：该结构化峰图方向已经跑通，但 final image score 仍低于原先 weighted image/band 匹配；下一步应加强 HKL family 一致性、晶体对称下的等价峰处理，以及 master 峰的高分辨率稳定提取。
 
 ### 2026-05-24
 

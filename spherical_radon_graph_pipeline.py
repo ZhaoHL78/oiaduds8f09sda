@@ -11,6 +11,7 @@ from pathlib import Path
 
 import matplotlib
 import numpy as np
+from scipy import ndimage as ndi
 from scipy.optimize import Bounds, linprog, minimize
 from scipy.spatial.transform import Rotation as R
 
@@ -28,6 +29,7 @@ from h5_band_enhanced_match import (
     MasterSphere,
     PreparedPattern,
     default_map_specs,
+    detector_pixels_to_sphere,
     jsonable,
     load_master_sphere,
     prepare_pattern,
@@ -81,6 +83,8 @@ class PeakDescriptor:
     profile: np.ndarray
     hkl: str = "unassigned"
     hkl_angle_deg: float = float("nan")
+    software_band_id: int | None = None
+    software_band_angle_deg: float = float("nan")
 
     def to_row(self) -> dict:
         return {
@@ -94,6 +98,8 @@ class PeakDescriptor:
             "asymmetry": float(self.asymmetry),
             "hkl": self.hkl,
             "hkl_angle_deg": float(self.hkl_angle_deg),
+            "software_band_id": "" if self.software_band_id is None else int(self.software_band_id),
+            "software_band_angle_deg": float(self.software_band_angle_deg),
             "profile": json.dumps(self.profile.astype(float).tolist()),
         }
 
@@ -196,6 +202,162 @@ def normalize_values(values: np.ndarray) -> np.ndarray:
     if hi <= lo:
         return np.zeros_like(values, dtype=np.float32)
     return np.clip((values - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
+
+
+def sample_image_at_pixels(image: np.ndarray, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
+    coords = np.vstack([rows.astype(np.float32), cols.astype(np.float32)])
+    return ndi.map_coordinates(image.astype(np.float32), coords, order=1, mode="nearest").astype(np.float32)
+
+
+def software_band_normals_for_pc(prepared: PreparedPattern, pc: tuple[float, float, float] | None = None) -> np.ndarray:
+    pc = prepared.bundle.pc if pc is None else pc
+    height, width = prepared.image.shape
+    normals = []
+    for segment in prepared.line_segments:
+        rows = np.asarray([segment.row0, segment.row1], dtype=np.float32)
+        cols = np.asarray([segment.col0, segment.col1], dtype=np.float32)
+        vectors = detector_pixels_to_sphere(rows, cols, height, width, pc).astype(np.float64)
+        normal = np.cross(vectors[0], vectors[1])
+        norm = float(np.linalg.norm(normal))
+        if norm <= 1e-10:
+            normal = np.asarray(segment_curve_normal_fallback(segment), dtype=np.float64)
+        else:
+            normal /= norm
+        normals.append(canonical_plane_normal(normal.astype(np.float32)))
+    if not normals:
+        return np.zeros((0, 3), dtype=np.float32)
+    return np.asarray(normals, dtype=np.float32)
+
+
+def detector_band_curves_for_current_pc(prepared: PreparedPattern, samples: int = 260) -> list[np.ndarray]:
+    height, width = prepared.image.shape
+    curves = []
+    for segment in prepared.line_segments:
+        rows = np.linspace(segment.row0, segment.row1, samples, dtype=np.float32)
+        cols = np.linspace(segment.col0, segment.col1, samples, dtype=np.float32)
+        inside = (rows >= 0.0) & (rows <= height - 1) & (cols >= 0.0) & (cols <= width - 1)
+        if np.any(inside):
+            curves.append(detector_pixels_to_sphere(rows[inside], cols[inside], height, width, prepared.bundle.pc))
+    return curves
+
+
+def segment_curve_normal_fallback(segment) -> np.ndarray:
+    dc = float(segment.col1 - segment.col0)
+    dr = float(segment.row1 - segment.row0)
+    normal = np.asarray([-dr, dc, 0.0], dtype=np.float32)
+    normal /= np.linalg.norm(normal) + 1e-8
+    return normal
+
+
+def sample_software_kikuchi_lines_on_sphere(prepared: PreparedPattern, args) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+    height, width = prepared.image.shape
+    line_vectors: list[np.ndarray] = []
+    line_values: list[np.ndarray] = []
+    line_ids: list[np.ndarray] = []
+    band_intensities = np.asarray([segment.band.intensity for segment in prepared.line_segments], dtype=np.float32)
+    if len(band_intensities):
+        band_intensities = normalize_values(band_intensities)
+        band_intensities = 0.35 + 0.65 * band_intensities
+
+    offset_count = max(1, int(args.h5_line_offset_count))
+    for band_id, segment in enumerate(prepared.line_segments):
+        dr = float(segment.row1 - segment.row0)
+        dc = float(segment.col1 - segment.col0)
+        length = math.hypot(dr, dc)
+        if length <= 1e-6:
+            continue
+        rows0 = np.linspace(segment.row0, segment.row1, int(args.h5_line_samples_per_band), dtype=np.float32)
+        cols0 = np.linspace(segment.col0, segment.col1, int(args.h5_line_samples_per_band), dtype=np.float32)
+        nrow = -dc / length
+        ncol = dr / length
+        width_px = max(float(args.h5_line_min_width_px), abs(float(segment.band.width)) * float(args.h5_line_width_scale))
+        offsets = np.linspace(-0.5 * width_px, 0.5 * width_px, offset_count, dtype=np.float32)
+        for offset in offsets:
+            rows = rows0 + offset * nrow
+            cols = cols0 + offset * ncol
+            inside = (rows >= 0.0) & (rows <= height - 1) & (cols >= 0.0) & (cols <= width - 1)
+            if not np.any(inside):
+                continue
+            rows_i = rows[inside]
+            cols_i = cols[inside]
+            valid = prepared.valid_mask[
+                np.clip(np.rint(rows_i).astype(np.int32), 0, height - 1),
+                np.clip(np.rint(cols_i).astype(np.int32), 0, width - 1),
+            ]
+            if not np.any(valid):
+                continue
+            rows_i = rows_i[valid]
+            cols_i = cols_i[valid]
+            vectors = detector_pixels_to_sphere(rows_i, cols_i, height, width, prepared.bundle.pc)
+            image_line = sample_image_at_pixels(prepared.image_band_score, rows_i, cols_i)
+            corrected = sample_image_at_pixels(prepared.corrected_score, rows_i, cols_i)
+            h5_raster = sample_image_at_pixels(prepared.h5_band_score, rows_i, cols_i)
+            band_strength = float(band_intensities[band_id]) if band_id < len(band_intensities) else 1.0
+            values = band_strength * (0.58 * image_line + 0.22 * corrected + 0.20 * h5_raster)
+            line_vectors.append(vectors.astype(np.float32))
+            line_values.append(values.astype(np.float32))
+            line_ids.append(np.full(len(values), band_id, dtype=np.int32))
+
+    if not line_vectors:
+        vectors = prepared.full_points_grid[prepared.valid_mask]
+        values = prepared.h5_band_score[prepared.valid_mask]
+        ids = np.full(len(values), -1, dtype=np.int32)
+    else:
+        vectors = np.vstack(line_vectors).astype(np.float32)
+        values = np.concatenate(line_values).astype(np.float32)
+        ids = np.concatenate(line_ids).astype(np.int32)
+    info = {
+        "source": "h5_software_kikuchi_lines_corrected_to_sphere",
+        "point_count": int(len(values)),
+        "line_count": int(len(prepared.line_segments)),
+        "samples_per_band": int(args.h5_line_samples_per_band),
+        "offset_count": int(offset_count),
+        "width_scale": float(args.h5_line_width_scale),
+    }
+    return vectors, values, ids, info
+
+
+def build_experimental_transfer_points(prepared: PreparedPattern, args) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+    source = str(args.experimental_transfer_source)
+    if source == "h5_lines":
+        vectors, values, ids, info = sample_software_kikuchi_lines_on_sphere(prepared, args)
+    else:
+        vectors = prepared.full_points_grid[prepared.valid_mask]
+        if source == "image_band":
+            values = prepared.image_band_score[prepared.valid_mask]
+        elif source == "h5_raster":
+            values = prepared.h5_band_score[prepared.valid_mask]
+        elif source == "combined":
+            values = prepared.combined_response[prepared.valid_mask]
+        else:
+            raise ValueError(f"Unknown experimental transfer source: {source}")
+        chosen = sample_rows(values, args.experiment_sample_count, args.seed + 11)
+        vectors = vectors[chosen]
+        values = values[chosen]
+        ids = np.full(len(values), -1, dtype=np.int32)
+        info = {
+            "source": source,
+            "point_count": int(len(values)),
+            "line_count": int(len(prepared.line_segments)),
+            "sampled_from_valid_pattern_pixels": True,
+        }
+    return vectors.astype(np.float32), values.astype(np.float32), ids.astype(np.int32), info
+
+
+def assign_software_band_ids(
+    peaks: list[PeakDescriptor],
+    band_normals: np.ndarray,
+    max_angle_deg: float,
+) -> None:
+    if len(band_normals) == 0:
+        return
+    for peak in peaks:
+        dots = np.clip(np.abs(band_normals @ peak.normal.astype(np.float32)), -1.0, 1.0)
+        band_id = int(np.argmax(dots))
+        angle = float(np.degrees(np.arccos(float(dots[band_id]))))
+        if angle <= max_angle_deg:
+            peak.software_band_id = band_id
+            peak.software_band_angle_deg = angle
 
 
 def spherical_radon_transform(
@@ -330,6 +492,66 @@ def build_peak_descriptors(
             )
         )
     return peaks
+
+
+def build_software_line_peak_descriptors(
+    prepared: PreparedPattern,
+    vectors: np.ndarray,
+    values: np.ndarray,
+    args,
+) -> list[PeakDescriptor]:
+    normals = software_band_normals_for_pc(prepared)
+    band_intensities = np.asarray([segment.band.intensity for segment in prepared.line_segments], dtype=np.float32)
+    if len(band_intensities):
+        strengths = 0.35 + 0.65 * normalize_values(band_intensities)
+    else:
+        strengths = np.ones(len(normals), dtype=np.float32)
+    pcz = max(float(prepared.bundle.pc[2]), 1e-6)
+    height = float(prepared.image.shape[0])
+    peaks: list[PeakDescriptor] = []
+    for peak_id, normal in enumerate(normals):
+        profile, asymmetry = descriptor_profile(
+            vectors,
+            values,
+            normal,
+            profile_width_deg=args.profile_width_deg,
+            profile_bins=args.profile_bins,
+        )
+        segment = prepared.line_segments[peak_id]
+        width_px = max(float(args.h5_line_min_width_px), abs(float(segment.band.width)) * float(args.h5_line_width_scale))
+        angular_width = float(np.degrees(np.arctan(width_px / max(pcz * height, 1e-6))))
+        peaks.append(
+            PeakDescriptor(
+                peak_id=peak_id,
+                source="experimental_software_line_peak",
+                normal=canonical_plane_normal(normal),
+                strength=float(strengths[peak_id]) if peak_id < len(strengths) else 1.0,
+                bandwidth_deg=angular_width,
+                asymmetry=asymmetry,
+                profile=profile,
+                software_band_id=peak_id,
+                software_band_angle_deg=0.0,
+            )
+        )
+    return peaks
+
+
+def merge_software_and_radon_peaks(
+    software_peaks: list[PeakDescriptor],
+    radon_peaks: list[PeakDescriptor],
+    peak_count: int,
+    min_separation_deg: float,
+) -> list[PeakDescriptor]:
+    merged = list(software_peaks)
+    for peak in radon_peaks:
+        if len(merged) >= peak_count:
+            break
+        if all(plane_angle_deg(peak.normal, old.normal) >= min_separation_deg for old in merged):
+            peak.peak_id = len(merged)
+            merged.append(peak)
+    for peak_id, peak in enumerate(merged):
+        peak.peak_id = peak_id
+    return merged
 
 
 def peaks_to_arrays(peaks: list[PeakDescriptor]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -621,6 +843,9 @@ def optimize_orientation_pc(
 ) -> tuple[MatchResult, dict, list[dict]]:
     height, width = prepared.image.shape
     exp_normals, std_normals, match_weights = matched_peak_arrays(matches, exp_peaks, std_peaks, initial_rotation)
+    exp_by_id = {peak.peak_id: peak for peak in exp_peaks}
+    matched_band_ids = [exp_by_id[match.exp_peak_id].software_band_id for match in matches]
+    pc_aware_peak_count = int(sum(band_id is not None for band_id in matched_band_ids))
     trace: list[dict] = []
     eval_count = 0
 
@@ -643,6 +868,16 @@ def optimize_orientation_pc(
         }
         return rotation, candidate_prepared, state
 
+    def current_exp_normals(candidate_prepared: PreparedPattern) -> np.ndarray:
+        if not len(exp_normals) or pc_aware_peak_count == 0:
+            return exp_normals
+        current = exp_normals.copy()
+        line_normals = software_band_normals_for_pc(candidate_prepared, candidate_prepared.bundle.pc)
+        for row, band_id in enumerate(matched_band_ids):
+            if band_id is not None and 0 <= int(band_id) < len(line_normals):
+                current[row] = line_normals[int(band_id)]
+        return current
+
     def objective(params: np.ndarray) -> float:
         nonlocal eval_count
         rotation, candidate_prepared, state = build_state(params)
@@ -650,7 +885,7 @@ def optimize_orientation_pc(
         peak_angle_deg = float("nan")
         peak_loss = 0.0
         if len(exp_normals):
-            rotated = rotation.apply(exp_normals)
+            rotated = rotation.apply(current_exp_normals(candidate_prepared))
             dots = np.sum(rotated * std_normals, axis=1)
             angles = np.arccos(np.clip(dots, -1.0, 1.0))
             peak_angle_deg = float(np.degrees(np.sum(match_weights * angles)))
@@ -673,6 +908,7 @@ def optimize_orientation_pc(
                 "loss": float(loss),
                 "image_score": float(image_score),
                 "peak_mean_angle_deg": float(peak_angle_deg),
+                "pc_aware_peak_count": int(pc_aware_peak_count),
                 **state,
             }
         )
@@ -722,6 +958,7 @@ def optimize_orientation_pc(
         "optimizer_fun": float(result.fun),
         "optimizer_nfev": int(result.nfev),
         "final_image_score": float(final_score),
+        "pc_aware_peak_count": int(pc_aware_peak_count),
     }
     return final, summary, trace
 
@@ -752,10 +989,22 @@ def peak_lon_colat(normals: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return lon, colat
 
 
-def save_experiment_backprojection(prepared: PreparedPattern, products: dict[str, np.ndarray], out_path: Path, lon_count: int, colat_count: int) -> None:
+def save_experiment_backprojection(
+    prepared: PreparedPattern,
+    products: dict[str, np.ndarray],
+    out_path: Path,
+    lon_count: int,
+    colat_count: int,
+    transfer_vectors: np.ndarray | None = None,
+    transfer_values: np.ndarray | None = None,
+    transfer_source: str = "image_band",
+) -> None:
     vectors = prepared.full_points_grid[prepared.valid_mask]
     raw_projection, raw_mask = project_to_equirect(vectors, detector_raw_display(prepared)[prepared.valid_mask], lon_count, colat_count)
-    line_projection, line_mask = project_to_equirect(vectors, prepared.image_band_score[prepared.valid_mask], lon_count, colat_count)
+    if transfer_vectors is None or transfer_values is None:
+        transfer_vectors = vectors
+        transfer_values = prepared.image_band_score[prepared.valid_mask]
+    line_projection, line_mask = project_to_equirect(transfer_vectors, transfer_values, lon_count, colat_count)
 
     fig = plt.figure(figsize=(15.0, 9.0))
     ax0 = fig.add_subplot(221)
@@ -764,8 +1013,9 @@ def save_experiment_backprojection(prepared: PreparedPattern, products: dict[str
     ax0.axis("off")
 
     ax1 = fig.add_subplot(222)
-    ax1.imshow(prepared.image_band_score, cmap="gray", vmin=0.0, vmax=1.0)
-    ax1.set_title("Detector line response used for experimental spherical Radon")
+    detector_source = prepared.h5_band_score if transfer_source == "h5_lines" else prepared.image_band_score
+    ax1.imshow(detector_source, cmap="gray", vmin=0.0, vmax=1.0)
+    ax1.set_title("Detector transfer source: software bands" if transfer_source == "h5_lines" else "Detector transfer source: line response")
     ax1.axis("off")
 
     ax2 = fig.add_subplot(223)
@@ -782,7 +1032,7 @@ def save_experiment_backprojection(prepared: PreparedPattern, products: dict[str
         products["raw_percentile"],
         prepared.valid_mask,
         "3D experimental sphere patch",
-        curves=None,
+        curves=[curve for curve in detector_band_curves_for_current_pc(prepared)],
         draw_reference_sphere=True,
     )
     fig.suptitle(
@@ -797,7 +1047,7 @@ def save_experiment_backprojection(prepared: PreparedPattern, products: dict[str
     extra = out_path.with_name(out_path.stem + "_line_response_map.png")
     fig2, ax = plt.subplots(figsize=(11.5, 5.4))
     ax.imshow(line_projection, cmap="magma", extent=extent, aspect="auto", alpha=np.where(line_mask, 1.0, 0.0))
-    ax.set_title("Experimental line response on sphere")
+    ax.set_title(f"Experimental transfer source on sphere: {transfer_source}")
     ax.set_xlabel("longitude (deg)")
     ax.set_ylabel("colatitude (deg)")
     fig2.tight_layout()
@@ -825,7 +1075,12 @@ def save_radon_maps(
             peak_lon, peak_colat = peak_lon_colat(peak_normals)
             axes[row, 0].scatter(peak_lon, peak_colat, c="white", edgecolors="red", s=58, linewidths=1.2)
             for peak, x, y in zip(peaks, peak_lon, peak_colat):
-                label = f"{peak.peak_id}" if peak.hkl == "unassigned" else f"{peak.peak_id}:{peak.hkl}"
+                if peak.hkl != "unassigned":
+                    label = f"{peak.peak_id}:{peak.hkl}"
+                elif peak.software_band_id is not None:
+                    label = f"{peak.peak_id}:B{peak.software_band_id}"
+                else:
+                    label = f"{peak.peak_id}"
                 axes[row, 0].text(x, y, label, fontsize=7, color="black", ha="center", va="center")
         axes[row, 0].set_xlim(-180, 180)
         axes[row, 0].set_ylim(90, 0)
@@ -1146,6 +1401,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--master-sample-count", type=int, default=9000)
     parser.add_argument("--experiment-sample-count", type=int, default=11000)
     parser.add_argument("--radon-chunk-size", type=int, default=192)
+    parser.add_argument("--experimental-transfer-source", choices=["h5_lines", "image_band", "h5_raster", "combined"], default="h5_lines")
+    parser.add_argument("--h5-line-samples-per-band", type=int, default=420)
+    parser.add_argument("--h5-line-offset-count", type=int, default=5)
+    parser.add_argument("--h5-line-width-scale", type=float, default=1.0)
+    parser.add_argument("--h5-line-min-width-px", type=float, default=1.5)
+    parser.add_argument("--experimental-peak-source", choices=["software_lines", "radon", "software_lines_plus_radon"], default="software_lines_plus_radon")
     parser.add_argument("--peak-count", type=int, default=24)
     parser.add_argument("--peak-min-separation-deg", type=float, default=5.5)
     parser.add_argument("--peak-min-score-quantile", type=float, default=0.68)
@@ -1169,6 +1430,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-image-score-weight", type=float, default=8.0)
     parser.add_argument("--candidate-match-bonus", type=float, default=0.02)
     parser.add_argument("--hkl-assign-max-angle-deg", type=float, default=10.0)
+    parser.add_argument("--peak-band-assign-max-angle-deg", type=float, default=12.0)
     parser.add_argument("--refine-rotation-bound-deg", type=float, default=5.0)
     parser.add_argument("--refine-pc-bound-px", type=float, default=10.0)
     parser.add_argument("--refine-radius-min", type=float, default=0.96)
@@ -1195,7 +1457,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    rng = np.random.default_rng(args.seed)
     map_spec = default_map_specs(args.data_dir)[args.map]
     master_h5 = resolve_master_path(args.master_h5)
     out_dir = args.out_dir / args.map / f"idx_{args.index:05d}"
@@ -1240,22 +1501,21 @@ def main() -> None:
     phase_id = int(bundle.ang_record.get("Phase", 1))
     phase_info, families = read_phase_hkl_families(args.h5, map_spec.h5_group, phase_id)
 
+    exp_vectors, exp_values, exp_transfer_band_ids, transfer_info = build_experimental_transfer_points(prepared, args)
+
     save_experiment_backprojection(
         prepared,
         products,
         out_dir / "01_experimental_pattern_backprojected_to_sphere.png",
         lon_count=args.sphere_lon_count,
         colat_count=args.sphere_colat_count,
+        transfer_vectors=exp_vectors,
+        transfer_values=exp_values,
+        transfer_source=args.experimental_transfer_source,
     )
 
     normal_grid = fibonacci_sphere(args.normal_count, hemisphere=True)
     scales = parse_float_list(args.radon_scales_deg)
-
-    exp_all_vectors = prepared.full_points_grid[prepared.valid_mask]
-    exp_all_values = prepared.image_band_score[prepared.valid_mask]
-    exp_idx = sample_rows(exp_all_values, args.experiment_sample_count, args.seed + 11)
-    exp_vectors = exp_all_vectors[exp_idx]
-    exp_values = exp_all_values[exp_idx]
 
     master_vectors = fibonacci_sphere(args.master_sample_count, hemisphere=False)
     master_values = master.sample_band(master_vectors)
@@ -1289,7 +1549,24 @@ def main() -> None:
         min_separation_deg=args.peak_min_separation_deg,
         min_score_quantile=args.peak_min_score_quantile,
     )
-    exp_peaks = build_peak_descriptors("experimental", exp_radon, exp_peak_indices, exp_vectors, exp_values, args)
+    exp_radon_peaks = build_peak_descriptors("experimental_radon", exp_radon, exp_peak_indices, exp_vectors, exp_values, args)
+    assign_software_band_ids(
+        exp_radon_peaks,
+        software_band_normals_for_pc(prepared),
+        max_angle_deg=args.peak_band_assign_max_angle_deg,
+    )
+    software_line_peaks = build_software_line_peak_descriptors(prepared, exp_vectors, exp_values, args)
+    if args.experimental_peak_source == "software_lines":
+        exp_peaks = software_line_peaks
+    elif args.experimental_peak_source == "software_lines_plus_radon":
+        exp_peaks = merge_software_and_radon_peaks(
+            software_line_peaks,
+            exp_radon_peaks,
+            peak_count=args.peak_count,
+            min_separation_deg=args.peak_min_separation_deg,
+        )
+    else:
+        exp_peaks = exp_radon_peaks
     std_peaks = build_peak_descriptors("master", std_radon, std_peak_indices, master_vectors, master_values, args, families)
 
     save_radon_maps(exp_radon, std_radon, exp_peaks, std_peaks, out_dir / "02_multiscale_spherical_radon_and_peaks.png")
@@ -1386,6 +1663,12 @@ def main() -> None:
         "line_variant": prepared.line_variant.name,
         "line_variant_score": prepared.line_variant_score,
         "variant_diagnostics": variant_diagnostics,
+        "experimental_transfer": transfer_info | {
+            "band_id_point_count": {
+                str(int(band_id)): int(np.sum(exp_transfer_band_ids == band_id))
+                for band_id in np.unique(exp_transfer_band_ids)
+            },
+        },
         "phase": phase_info,
         "families": [
             {
@@ -1402,6 +1685,11 @@ def main() -> None:
         "refinement": refinement_summary,
         "final_match_result": final_result.to_json_dict(),
         "hyperparameters": {
+            "experimental_transfer_source": args.experimental_transfer_source,
+            "experimental_peak_source": args.experimental_peak_source,
+            "h5_line_samples_per_band": int(args.h5_line_samples_per_band),
+            "h5_line_offset_count": int(args.h5_line_offset_count),
+            "h5_line_width_scale": float(args.h5_line_width_scale),
             "radon_scales_deg": scales,
             "normal_count": int(args.normal_count),
             "master_sample_count": int(args.master_sample_count),
