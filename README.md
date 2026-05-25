@@ -75,6 +75,15 @@
   - 迭代流程为 `rotation match -> expansion/contract -> lr decay -> repeat`，每轮先做球面点旋转匹配，再调膨胀系数，逐步减小搜索半径直到收敛。
   - loss 以同 HKL family 的球面霍夫点角距离为主，同时保留 full pattern match score guard，避免为了霍夫点更近而牺牲整张图的空间匹配。
   - 输出公式验证图、球面霍夫点匹配图、膨胀迭代 trace、逐条 band 三维还原点和最终空间匹配图。
+- 新增独立的球面 Radon 峰图匹配 pipeline：
+  - 该方向暂时不沿用前一版半径膨胀/霍夫点微调逻辑，而是把实验 pattern 和 master sphere 都转换为球面函数后，在球面 plane-normal Hough/Radon 空间中匹配峰图。
+  - 实验 pattern 先按 H5 PC 反投影到单位球面，master sphere 使用 EMsoft/kikuchipy master pattern 的 band response。
+  - 对实验球面和 master sphere 分别做多尺度大圆积分，得到 spherical Hough/Radon response。
+  - 在 plane-normal Hough space 中用非极大值抑制提取峰点；每个峰保存 `normal direction / peak strength / bandwidth / band profile / asymmetry` 描述符。
+  - 构建实验峰图和标准峰图，使用三角不变量生成候选 orientation。
+  - 对候选 orientation 使用 partial optimal transport 做全局峰匹配；当前实现是带质量约束的线性规划 partial OT。
+  - 在最佳候选基础上联合优化 orientation、`pcx/pcy` 偏移和 `pcz/radius_scale`，然后回到原始球面 pattern 做局部 refinement。
+  - 最终输出 orientation、phase、校正 PC、partial OT 匹配峰和对应 `{hkl}` 解释表。
 
 主要代码：
 
@@ -85,6 +94,7 @@
 - `dip_parametric_registration.py`
 - `hough_point_spatial_reconstruction.py`
 - `spherical_hough_expansion_refinement.py`
+- `spherical_radon_graph_pipeline.py`
 
 ### 5. Pattern center 与投影半径偏差校正
 
@@ -131,6 +141,18 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 - 可视化输出默认写入 `outputs/`，不上传 GitHub。
 
 ## 版本改动
+
+### 2026-05-25
+
+- 新增 `spherical_radon_graph_pipeline.py`，实现新的球面 Radon 峰图匹配原型，不再以之前的空间膨胀/收缩版本作为主线。
+- 新 pipeline 对实验 pattern 和标准 master sphere 分别执行多尺度 spherical Hough/Radon transform，在 plane-normal Hough space 中提取峰点。
+- 峰描述符包括法向方向、峰强度、最佳带宽、横向 band profile 和 asymmetry。
+- 使用峰图的三角不变量生成 orientation 候选，再使用 partial optimal transport 进行全局峰匹配。
+- 当前 partial OT 使用 `scipy.optimize.linprog` 求解：实验峰和标准峰都有质量上限，只运输指定比例的总质量，因此允许缺峰、假峰和局部遮挡。
+- 在 OT 选出的候选上，联合优化 orientation、`pcx/pcy` 和 `pcz/radius_scale`，再回到原始球面 pattern 上以 image/band score 做局部 refinement。
+- 对 `area1_high idx=2661` 做了一次端到端尝试，输出目录为 `outputs/spherical_radon_graph_try_20260525_v2/area1_high/idx_02661/`。
+- 该样本最终 phase 为 `Face Centered Cubic`，校正 PC 从 H5 的 `(0.52863, 0.59259, 0.61504)` 变为约 `(0.52697, 0.59524, 0.62151)`，最终 sphere score 约 `0.1971`，保留 6 个 partial OT 峰匹配和 `{hkl}` 解释。
+- 当前限制：实验 pattern 只是球面上的局部 patch，Radon 峰在可见视场附近聚集，峰匹配数量仍偏少；下一步应增加 antipodal/晶体对称约束、把峰 profile 与 master 局部带强度一起用于更稳定的 OT cost。
 
 ### 2026-05-24
 
