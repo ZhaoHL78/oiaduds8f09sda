@@ -98,6 +98,12 @@
   - 将晶面法向用软件 orientation 旋到 detector 坐标，再用当前 H5 PC 投影成 detector 上的预测 Kikuchi line，以及球面 plane-normal Hough 点。
   - 输出 OHP 实测线与软件 orientation+HKL 预测线的 detector 叠加图、detector/crystal 两套球面 normal 点图，以及按软件 orientation 直接放到 master sphere 坐标中的 raw / enhanced pattern。
   - 当前该路线的用途是检查“软件 indexing 给出的取向是否能解释 OHP band 的球面位置”，不是替代 full-pattern matching。
+- 新增软件 orientation 直接投影脚本：
+  - `software_orientation_sphere_projection.py` 专门实现 `PC -> 实验 detector sphere -> 软件 orientation -> 标准 Kikuchi master sphere` 这条路线。
+  - 该脚本不做 orientation matching、不做 HKL label 匹配、不做 PC 优化；只使用 H5 读取的 `X-Star/Y-Star/Z-Star` 和 `ANG/DATA/Orientations`。
+  - H5 中软件 orientation 以 `Orientations(9)` 旋转矩阵保存；脚本额外输出一个 `ZXZ` Euler angle 参考值，便于和欧拉角表述对应。
+  - 默认使用前面由 OHP band 几何验证过的坐标约定 `orientation_op=G_T`、`detector_convention=flip_xy`，将 detector 上的球面向量放到 master/crystal 坐标中。
+  - 输出四类图：PC 回到 detector sphere、软件 orientation 放到 master sphere 的 3D 图、master sphere 经纬展开图、软件 orientation 坐标框架。
 
 主要代码：
 
@@ -111,6 +117,7 @@
 - `spherical_radon_graph_pipeline.py`
 - `compare_matching_routes_fixed_pc.py`
 - `direct_hkl_sphere_localization.py`
+- `software_orientation_sphere_projection.py`
 
 ### 5. Pattern center 与投影半径偏差校正
 
@@ -182,6 +189,9 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 - 新增 `direct_hkl_sphere_localization.py`，直接使用 H5 `ANG/DATA/Orientations` 和 phase HKL families 判断 pattern 在 Kikuchi sphere 上的位置。
 - 对 `area1_high idx=2661` 的直接软件 HKL 定位结果：选择 `orientation_op=G_T`、`detector_convention=flip_xy` 后，8 条 OHP band 全部可与软件 orientation 预测的 HKL line 匹配，weighted mean plane-normal angle 约 `5.66 deg`，最大约 `12.00 deg`。
 - 直接 HKL 定位输出目录为 `outputs/direct_hkl_sphere_localization_20260525/area1_high/idx_02661/`，包含 detector 叠加图、球面 Hough 点图、pattern 直接投影到 master sphere 的可视化和逐条 band `{hkl}` 对应 CSV。
+- 新增 `software_orientation_sphere_projection.py`，修正“软件 orientation 直接定位”的表达方式：先用 PC 将整张实验 pattern 反投影到 detector sphere，再用 H5 软件 orientation 将这块球面 patch 放到标准 Kikuchi master sphere。
+- 对 `area1_high idx=2661` 的软件 orientation 直接投影结果：使用 H5 PC `(0.52863, 0.59259, 0.61504)` 和 H5 `Orientations(9)`，默认 `orientation_op=G_T`、`detector_convention=flip_xy`；参考 `ZXZ` Euler angle 约为 `(135.02, 21.15, -64.28) deg`。
+- 软件 orientation 直接投影输出目录为 `outputs/software_orientation_sphere_projection_20260526/area1_high/idx_02661/`，包含 `01_pc_backprojection_to_detector_sphere.png`、`02_software_orientation_position_on_master_sphere_3d.png`、`03_software_orientation_position_on_master_sphere_map.png` 和 `04_software_orientation_frame_on_master_sphere.png`。
 
 ### 2026-05-24
 
