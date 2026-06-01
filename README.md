@@ -104,6 +104,16 @@
   - H5 中软件 orientation 以 `Orientations(9)` 旋转矩阵保存；脚本额外输出一个 `ZXZ` Euler angle 参考值，便于和欧拉角表述对应。
   - 默认使用前面由 OHP band 几何验证过的坐标约定 `orientation_op=G_T`、`detector_convention=flip_xy`，将 detector 上的球面向量放到 master/crystal 坐标中。
   - 输出四类图：PC 回到 detector sphere、软件 orientation 放到 master sphere 的 3D 图、master sphere 经纬展开图、软件 orientation 坐标框架。
+- 新增闭环 crystal-frame mapping 脚本：
+  - `closed_loop_crystal_frame_mapping.py` 实现完整链条 `experimental pattern -> detector-frame sphere -> sample-frame sphere -> crystal-frame sphere -> standard Kikuchi sphere`。
+  - detector ray 使用 EDAX PC 形式：
+    `x=(u+0.5-PCx*W)/(PCz*W)`，
+    `y=(PCy*H-(v+0.5))/(PCz*W)`，
+    `r_d=normalize([x,y,1])`。
+  - detector-to-sample 几何写成独立模块 `R_sd`，默认枚举 `identity/rx±70/ry±70/rz±70`，同时枚举 detector 图像方向的 `flip/swap` 组合。
+  - orientation 默认按 `g` 为 crystal-to-sample 矩阵处理，使用 `g^T` 将 sample-frame 方向转回 crystal-frame。
+  - forward validation 不先看球面贴图，而是用 `r_c(u,v)` 在 master sphere 上查询强度生成 `I_sim(u,v)`，再和 `I_exp(u,v)` 做 NCC。
+  - refinement 分三步：离散坐标系枚举、小范围 PC 网格搜索、小角度 orientation correction，最后输出 `S_exp(theta,phi)` 的 crystal-frame spherical map。
 
 主要代码：
 
@@ -118,6 +128,7 @@
 - `compare_matching_routes_fixed_pc.py`
 - `direct_hkl_sphere_localization.py`
 - `software_orientation_sphere_projection.py`
+- `closed_loop_crystal_frame_mapping.py`
 
 ### 5. Pattern center 与投影半径偏差校正
 
@@ -192,6 +203,24 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 - 新增 `software_orientation_sphere_projection.py`，修正“软件 orientation 直接定位”的表达方式：先用 PC 将整张实验 pattern 反投影到 detector sphere，再用 H5 软件 orientation 将这块球面 patch 放到标准 Kikuchi master sphere。
 - 对 `area1_high idx=2661` 的软件 orientation 直接投影结果：使用 H5 PC `(0.52863, 0.59259, 0.61504)` 和 H5 `Orientations(9)`，默认 `orientation_op=G_T`、`detector_convention=flip_xy`；参考 `ZXZ` Euler angle 约为 `(135.02, 21.15, -64.28) deg`。
 - 软件 orientation 直接投影输出目录为 `outputs/software_orientation_sphere_projection_20260526/area1_high/idx_02661/`，包含 `01_pc_backprojection_to_detector_sphere.png`、`02_software_orientation_position_on_master_sphere_3d.png`、`03_software_orientation_position_on_master_sphere_map.png` 和 `04_software_orientation_frame_on_master_sphere.png`。
+
+### 2026-06-01
+
+- 新增 `closed_loop_crystal_frame_mapping.py`，按物理闭环重做实验 pattern 到标准晶体坐标 Kikuchi sphere 的映射：
+  - `r_d`：只由 EDAX PC 和 detector pixel 得到；
+  - `r_s = R_sd r_d`：显式加入 detector-to-sample 几何；
+  - `r_c = g^T r_s`：使用软件 orientation 将 sample-frame 散射方向转回 crystal-frame；
+  - `I_sim(u,v)=M(r_c(u,v))`：从 master sphere forward-simulate 回 detector 平面，用 NCC 验证坐标链条。
+- 对 `area1_high idx=2661` 跑完整闭环，第一阶段离散搜索在当前候选中选择 `detector_convention=swap_xy`、`R_sd=rx-70`，说明 detector-to-sample 几何和图像方向确实不能省略。
+- 在该样本上，小范围 PC 与 orientation refinement 将 full combined NCC 从约 `0.0551` 提升到约 `0.0993`；refined PC 为 `(0.51863, 0.57259, 0.64004)`，orientation 小旋转约 `(-0.360, 1.330, -0.030) deg`。
+- 该 NCC 仍偏低，说明当前只是在正确闭环框架内跑通了验证流程，还没有完成最终 detector geometry / vendor convention / master phase intensity 的可靠标定。
+- 输出目录为 `outputs/closed_loop_crystal_frame_mapping_20260601/area1_high/idx_02661/`，包括：
+  - `01_detector_frame_sphere_from_pc.png`
+  - `02_coordinate_geometry_search_scores.png`
+  - `03_forward_validation_exp_vs_sim.png`
+  - `04_crystal_frame_spherical_map.png`
+  - `05_refined_closed_loop_3d.png`
+  - 三个阶段的 CSV trace。
 
 ### 2026-05-24
 
