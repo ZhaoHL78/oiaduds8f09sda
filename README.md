@@ -114,6 +114,13 @@
   - orientation 默认按 `g` 为 crystal-to-sample 矩阵处理，使用 `g^T` 将 sample-frame 方向转回 crystal-frame。
   - forward validation 不先看球面贴图，而是用 `r_c(u,v)` 在 master sphere 上查询强度生成 `I_sim(u,v)`，再和 `I_exp(u,v)` 做 NCC。
   - refinement 分三步：离散坐标系枚举、小范围 PC 网格搜索、小角度 orientation correction，最后输出 `S_exp(theta,phi)` 的 crystal-frame spherical map。
+- 新增几何-only PC/orientation 投影脚本：
+  - `geometry_only_pc_orientation_projection.py` 是当前用于排查坐标链路的干净基线，明确不做 matching、不做坐标搜索、不做 PC/orientation refinement。
+  - Layer 1 固定使用 EDAX PC 公式把原始 pattern 反投影到 detector-frame sphere：
+    `r_d=normalize([(u+0.5-PCx*W)/(PCz*W), (PCy*H-(v+0.5))/(PCz*W), 1])`。
+  - Layer 2 使用 H5 文件中的实验几何参数得到 sample-frame direction；默认 `--geometry-model kikuchipy_edax`，即按 kikuchipy 的 EDAX H5 reader 使用 `Camera Elevation Angle`、`Camera Azimuthal Angle`、`Sample Tilt` 和 EDAX PC convention。
+  - Layer 3 将 H5 `ANG/DATA/Orientations(9)` 作为 crystal-to-sample 矩阵 `g`，用 `g^T` 将散射方向转回 crystal-frame/master-sphere 坐标。
+  - 输出 PC-only detector sphere、detector/sample/crystal 三层坐标链、最终 master sphere 叠加、经纬展开图、forward master projection check，以及 H5/OHP band curves 经过同一几何链后的可视化。
 
 主要代码：
 
@@ -129,6 +136,7 @@
 - `direct_hkl_sphere_localization.py`
 - `software_orientation_sphere_projection.py`
 - `closed_loop_crystal_frame_mapping.py`
+- `geometry_only_pc_orientation_projection.py`
 
 ### 5. Pattern center 与投影半径偏差校正
 
@@ -206,6 +214,11 @@ D:\anaconda3\envs\torch\python.exe .\batch_pc_radius_bias_correction_gpu.py `
 
 ### 2026-06-01
 
+- 新增 `geometry_only_pc_orientation_projection.py`，作为“忘掉旧匹配”的几何-only 基线：
+  - 输入只使用原始 UP2 pattern、H5 中的 `X-Star/Y-Star/Z-Star`、H5 `Orientations(9)` 和文件实验几何参数。
+  - 默认几何模型改为 `kikuchipy_edax`，按 EDAX H5 convention 直接从文件参数生成 sample-frame direction；不再把 `R_sd` 简化成手写 `Rx(-70)`。
+  - 输出目录为 `outputs/geometry_only_pc_orientation_projection/area1_high/idx_02661/`，本地包含 `01_pc_only_detector_frame_sphere.png` 到 `07_file_geometry_variants_no_fitting.png` 和 `summary.json`。
+  - 该脚本的目的不是提高匹配分数，而是建立可审计的坐标闭环：`experimental pattern -> detector-frame sphere -> sample-frame sphere -> crystal-frame/master sphere`。
 - 新增 `closed_loop_crystal_frame_mapping.py`，按物理闭环重做实验 pattern 到标准晶体坐标 Kikuchi sphere 的映射：
   - `r_d`：只由 EDAX PC 和 detector pixel 得到；
   - `r_s = R_sd r_d`：显式加入 detector-to-sample 几何；
