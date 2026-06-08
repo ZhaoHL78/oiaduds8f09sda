@@ -514,12 +514,12 @@ def main() -> None:
     parser.add_argument(
         "--h5",
         type=Path,
-        default=Path(r"F:\kikuchi-super resolution\20260512Cu resolution-contrast.edaxh5"),
+        default=Path(r"D:\project\EBSD2026\ebsd.edaxh5"),
     )
     parser.add_argument(
         "--up2",
         type=Path,
-        default=Path(r"F:\kikuchi-super resolution\20260512_Cu_Area 1_OIM Map 1.up2"),
+        default=Path(r"C:\Users\WHJ\Desktop\kikuchi-super resolution\20260512_Cu_Area 1_OIM Map 1.up2"),
     )
     parser.add_argument(
         "--map-group",
@@ -530,13 +530,13 @@ def main() -> None:
         "--master",
         type=Path,
         default=Path(
-            r"E:\EBSD-projiect\.venv\Lib\site-packages\kikuchipy\data\emsoft_ebsd_master_pattern\ni_mc_mp_20kv_uint8_gzip_opts9.h5"
+            r"D:\anaconda3\envs\torch\Lib\site-packages\kikuchipy\data\emsoft_ebsd_master_pattern\ni_mc_mp_20kv_uint8_gzip_opts9.h5"
         ),
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(r"E:\EBSD-projiect\EBSD\outputs\edax_area1_index0_software_projection.png"),
+        default=Path(r"outputs\github_edax_visualizations\edax_area1_index0_software_projection.png"),
     )
     args = parser.parse_args()
 

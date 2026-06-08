@@ -23,11 +23,11 @@ from project_edax_oim_to_sphere import (
 )
 
 
-H5_PATH = Path(r"F:\kikuchi-super resolution\20260512Cu resolution-contrast.edaxh5")
+H5_PATH = Path(r"D:\project\EBSD2026\ebsd.edaxh5")
 MASTER_PATH = Path(
-    r"E:\EBSD-projiect\.venv\Lib\site-packages\kikuchipy\data\emsoft_ebsd_master_pattern\ni_mc_mp_20kv_uint8_gzip_opts9.h5"
+    r"D:\anaconda3\envs\torch\Lib\site-packages\kikuchipy\data\emsoft_ebsd_master_pattern\ni_mc_mp_20kv_uint8_gzip_opts9.h5"
 )
-OUTPUT_DIR = Path(r"E:\EBSD-projiect\EBSD\outputs\scan_position_pc_correction")
+OUTPUT_DIR = Path(r"outputs\github_edax_visualizations\scan_position_pc_correction")
 
 
 @dataclass(frozen=True)
@@ -288,14 +288,14 @@ def main() -> None:
     configs_area1 = [
         MapConfig(
             name="Area 1 HighR",
-            up2_path=Path(r"F:\kikuchi-super resolution\20260512_Cu_Area 1_OIM Map 1.up2"),
+            up2_path=Path(r"C:\Users\WHJ\Desktop\kikuchi-super resolution\20260512_Cu_Area 1_OIM Map 1.up2"),
             map_group="/20260512/Cu/Area 1/OIM Map 1HighR",
             indices=(34, 14441, 28676, 29111),
             output_name="area1_highr_pcxyz_xneg_ypos_zpos_tilt70.png",
         ),
         MapConfig(
             name="Area 1 HighR representative map positions",
-            up2_path=Path(r"F:\kikuchi-super resolution\20260512_Cu_Area 1_OIM Map 1.up2"),
+            up2_path=Path(r"C:\Users\WHJ\Desktop\kikuchi-super resolution\20260512_Cu_Area 1_OIM Map 1.up2"),
             map_group="/20260512/Cu/Area 1/OIM Map 1HighR",
             indices=(0, 217, 21255, 42292, 42509),
             output_name="area1_highr_representative_pcxyz_xneg_ypos_zpos_tilt70.png",
@@ -304,14 +304,14 @@ def main() -> None:
     configs_area2 = [
         MapConfig(
             name="Area 2 HighR",
-            up2_path=Path(r"F:\kikuchi-super resolution\20260512_Cu_Area 2_OIM Map 1.up2"),
+            up2_path=Path(r"C:\Users\WHJ\Desktop\kikuchi-super resolution\20260512_Cu_Area 2_OIM Map 1.up2"),
             map_group="/20260512/Cu/Area 2/OIM Map 2HighR",
             indices=(19802, 21230, 22834, 19625),
             output_name="area2_highr_pcxyz_xneg_yneg_zpos_tilt_plus_elev78.png",
         ),
         MapConfig(
             name="Area 2 HighR representative map positions",
-            up2_path=Path(r"F:\kikuchi-super resolution\20260512_Cu_Area 2_OIM Map 1.up2"),
+            up2_path=Path(r"C:\Users\WHJ\Desktop\kikuchi-super resolution\20260512_Cu_Area 2_OIM Map 1.up2"),
             map_group="/20260512/Cu/Area 2/OIM Map 2HighR",
             indices=(0, 177, 14151, 28124, 28301),
             output_name="area2_highr_representative_pcxyz_xneg_yneg_zpos_tilt_plus_elev78.png",

@@ -34,11 +34,11 @@ class SampleSet:
     output_path: Path
 
 
-H5_PATH = Path(r"F:\kikuchi-super resolution\20260512Cu resolution-contrast.edaxh5")
+H5_PATH = Path(r"D:\project\EBSD2026\ebsd.edaxh5")
 MASTER_PATH = Path(
-    r"E:\EBSD-projiect\.venv\Lib\site-packages\kikuchipy\data\emsoft_ebsd_master_pattern\ni_mc_mp_20kv_uint8_gzip_opts9.h5"
+    r"D:\anaconda3\envs\torch\Lib\site-packages\kikuchipy\data\emsoft_ebsd_master_pattern\ni_mc_mp_20kv_uint8_gzip_opts9.h5"
 )
-OUTPUT_DIR = Path(r"E:\EBSD-projiect\EBSD\outputs\edax_projection_sets")
+OUTPUT_DIR = Path(r"outputs\github_edax_visualizations\edax_projection_sets")
 
 
 def build_master_texture(upper_interp, lower_interp, lon_count: int = 720, colat_count: int = 360) -> np.ndarray:
@@ -199,7 +199,7 @@ def main() -> None:
         SampleSet(
             name="Area 1 HighR",
             h5_path=H5_PATH,
-            up2_path=Path(r"F:\kikuchi-super resolution\20260512_Cu_Area 1_OIM Map 1.up2"),
+            up2_path=Path(r"C:\Users\WHJ\Desktop\kikuchi-super resolution\20260512_Cu_Area 1_OIM Map 1.up2"),
             map_group="/20260512/Cu/Area 1/OIM Map 1HighR",
             pattern_indices=(34, 14441, 28676, 29111),
             output_path=OUTPUT_DIR / "area1_highr_fixed_chain_lambert_band.png",
@@ -207,7 +207,7 @@ def main() -> None:
         SampleSet(
             name="Area 2 HighR",
             h5_path=H5_PATH,
-            up2_path=Path(r"F:\kikuchi-super resolution\20260512_Cu_Area 2_OIM Map 1.up2"),
+            up2_path=Path(r"C:\Users\WHJ\Desktop\kikuchi-super resolution\20260512_Cu_Area 2_OIM Map 1.up2"),
             map_group="/20260512/Cu/Area 2/OIM Map 2HighR",
             pattern_indices=(19802, 21230, 22834, 19625),
             output_path=OUTPUT_DIR / "area2_highr_fixed_chain_lambert_band.png",

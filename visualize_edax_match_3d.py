@@ -253,12 +253,12 @@ def main() -> None:
     parser.add_argument(
         "--h5",
         type=Path,
-        default=Path(r"F:\kikuchi-super resolution\20260512Cu resolution-contrast.edaxh5"),
+        default=Path(r"D:\project\EBSD2026\ebsd.edaxh5"),
     )
     parser.add_argument(
         "--up2",
         type=Path,
-        default=Path(r"F:\kikuchi-super resolution\20260512_Cu_Area 2_OIM Map 1.up2"),
+        default=Path(r"C:\Users\WHJ\Desktop\kikuchi-super resolution\20260512_Cu_Area 2_OIM Map 1.up2"),
     )
     parser.add_argument("--map-group", default="/20260512/Cu/Area 2/OIM Map 2HighR")
     parser.add_argument("--pattern-index", type=int, default=19802)
@@ -266,13 +266,13 @@ def main() -> None:
         "--master",
         type=Path,
         default=Path(
-            r"E:\EBSD-projiect\.venv\Lib\site-packages\kikuchipy\data\emsoft_ebsd_master_pattern\ni_mc_mp_20kv_uint8_gzip_opts9.h5"
+            r"D:\anaconda3\envs\torch\Lib\site-packages\kikuchipy\data\emsoft_ebsd_master_pattern\ni_mc_mp_20kv_uint8_gzip_opts9.h5"
         ),
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path(r"E:\EBSD-projiect\EBSD\outputs\edax_3d_match"),
+        default=Path(r"outputs\github_edax_visualizations\edax_3d_match"),
     )
     parser.add_argument(
         "--circle",
