@@ -92,6 +92,19 @@ def normalize_to_uint8(pattern: np.ndarray, percentiles: tuple[float, float]) ->
     return np.round(scaled * 255.0).astype(np.uint8)
 
 
+def circular_alpha(shape: tuple[int, int], inset: int = 2, supersample: int = 4) -> Image.Image:
+    height, width = shape
+    hi_h = height * supersample
+    hi_w = width * supersample
+    yy, xx = np.indices((hi_h, hi_w), dtype=np.float32)
+    cx = (hi_w - 1) / 2.0
+    cy = (hi_h - 1) / 2.0
+    radius = 0.5 * min(hi_h, hi_w) - inset * supersample
+    mask = ((xx - cx) ** 2 + (yy - cy) ** 2 <= radius**2).astype(np.uint8) * 255
+    image = Image.fromarray(mask, mode="L")
+    return image.resize((width, height), Image.Resampling.LANCZOS)
+
+
 def simulate_pattern(
     detector_rays: np.ndarray,
     tilt_deg: float,
@@ -110,8 +123,15 @@ def save_pattern_png(
     pattern: np.ndarray,
     path: Path,
     percentiles: tuple[float, float],
+    circular_transparent: bool = False,
+    circle_inset: int = 2,
 ) -> None:
-    image = Image.fromarray(normalize_to_uint8(pattern, percentiles), mode="L")
+    grayscale = Image.fromarray(normalize_to_uint8(pattern, percentiles), mode="L")
+    if circular_transparent:
+        alpha = circular_alpha(pattern.shape, inset=circle_inset)
+        image = Image.merge("RGBA", (grayscale, grayscale, grayscale, alpha))
+    else:
+        image = grayscale
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path)
 
@@ -123,6 +143,7 @@ def save_contact_sheet(
     master_path: Path,
     mode: str,
     percentiles: tuple[float, float],
+    circular_transparent: bool,
 ) -> None:
     fig, axes = plt.subplots(1, len(results), figsize=(3.2 * len(results), 3.6))
     if len(results) == 1:
@@ -135,6 +156,17 @@ def save_contact_sheet(
             vmax=255,
             interpolation="nearest",
         )
+        if circular_transparent:
+            height, width = result.pattern.shape
+            theta = np.linspace(0, 2 * np.pi, 720)
+            radius = 0.5 * min(height, width) - 2
+            ax.plot(
+                (width - 1) / 2 + radius * np.cos(theta),
+                (height - 1) / 2 + radius * np.sin(theta),
+                color="white",
+                linewidth=0.6,
+                alpha=0.65,
+            )
         ax.set_title(f"tilt {result.tilt_deg:+.0f} deg")
         ax.axis("off")
 
@@ -143,6 +175,7 @@ def save_contact_sheet(
             "[111] single-crystal Kikuchi simulation | fixed EDAX PC="
             f"({pc_edax[0]:.6f}, {pc_edax[1]:.6f}, {pc_edax[2]:.6f}) | "
             f"master={master_path.name} | mode={mode}"
+            f"{' | circular transparent PNGs' if circular_transparent else ''}"
         ),
         fontsize=11,
     )
@@ -159,6 +192,7 @@ def write_metadata(
     shape: tuple[int, int],
     master_path: Path,
     mode: str,
+    circular_transparent: bool,
 ) -> None:
     with output_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(
@@ -172,6 +206,7 @@ def write_metadata(
                 "width",
                 "master",
                 "mode",
+                "circular_transparent",
                 "output_png",
             ],
         )
@@ -187,6 +222,7 @@ def write_metadata(
                     "width": shape[1],
                     "master": str(master_path),
                     "mode": mode,
+                    "circular_transparent": circular_transparent,
                     "output_png": str(result.output_path),
                 }
             )
@@ -232,6 +268,17 @@ def parse_args() -> argparse.Namespace:
         default=(0.5, 99.5),
         metavar=("LOW", "HIGH"),
     )
+    parser.add_argument(
+        "--circular-transparent",
+        action="store_true",
+        help="Save each simulated pattern as an EDAX-like circular RGBA PNG.",
+    )
+    parser.add_argument(
+        "--circle-inset",
+        type=int,
+        default=2,
+        help="Inset of the circular alpha mask in pixels.",
+    )
     return parser.parse_args()
 
 
@@ -258,7 +305,13 @@ def main() -> None:
         )
         stem = f"sim_111_tilt_{float(tilt):+05.1f}deg".replace("+", "p").replace("-", "m")
         output_path = args.output_dir / "individual" / f"{stem}.png"
-        save_pattern_png(pattern, output_path, tuple(args.percentiles))
+        save_pattern_png(
+            pattern,
+            output_path,
+            tuple(args.percentiles),
+            circular_transparent=args.circular_transparent,
+            circle_inset=args.circle_inset,
+        )
         results.append(SimulationResult(float(tilt), pattern, output_path))
         print(f"saved tilt {float(tilt):+g} deg: {output_path}")
 
@@ -269,6 +322,7 @@ def main() -> None:
         master_path=args.master,
         mode=args.mode,
         percentiles=tuple(args.percentiles),
+        circular_transparent=args.circular_transparent,
     )
     write_metadata(
         results=results,
@@ -277,6 +331,7 @@ def main() -> None:
         shape=shape,
         master_path=args.master,
         mode=args.mode,
+        circular_transparent=args.circular_transparent,
     )
     print(f"fixed EDAX PC: {pc_edax}")
     print(f"contact sheet: {args.output_dir / 'simulated_111_tilt_contact_sheet.png'}")

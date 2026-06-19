@@ -51,6 +51,8 @@
 - 默认从 `D:\project\EBSD2026\ebsd.edaxh5` 的 Area 1 HighR 读取 `X-Star/Y-Star/Z-Star` 作为固定 PC。
 - 0 deg 时 detector 中心方向对准晶体 `[111]`，上下倾斜只绕 detector 水平轴改变一个角度变量。
 - 默认倾斜角为 `-10, -5, 0, 5, 10` deg。
+- 可用 `--pc 0.5 0.5 0.5` 指定固定 PC。
+- 可用 `--circular-transparent` 输出 EDAX 风格圆形 detector PNG，圆外 alpha=0。
 - 默认 master pattern 为 kikuchipy 自带 Ni/FCC master pattern；如果有 Cu master sphere，可用 `--master` 替换。
 
 主要代码：
@@ -97,6 +99,17 @@ D:\anaconda3\envs\torch\python.exe .\simulate_111_tilt_kikuchi_patterns.py `
   --mode corrected
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\simulate_111_tilt_kikuchi_patterns.py `
+  --output-dir outputs\simulated_111_tilt_pc050_circular_transparent `
+  --height 1024 `
+  --width 1024 `
+  --pc 0.5 0.5 0.5 `
+  --tilts -10 -5 0 5 10 `
+  --mode corrected `
+  --circular-transparent
+```
+
 ## 版本改动
 
 ### 2026-06-19
@@ -107,6 +120,10 @@ D:\anaconda3\envs\torch\python.exe .\simulate_111_tilt_kikuchi_patterns.py `
 - 已生成两组本地输出：
   - `outputs/simulated_111_tilt_patterns/simulated_111_tilt_contact_sheet.png`
   - `outputs/simulated_111_tilt_patterns_raw/simulated_111_tilt_contact_sheet.png`
+- 新增圆形透明 PNG 输出选项 `--circular-transparent`。
+- 已用 `PC=(0.5, 0.5, 0.5)` 生成本地 EDAX 圆形透明输出：
+  - `outputs/simulated_111_tilt_pc050_circular_transparent/individual/*.png`
+  - `outputs/simulated_111_tilt_pc050_circular_transparent_raw/individual/*.png`
 
 ### 2026-06-08
 
