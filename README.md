@@ -45,6 +45,14 @@
 - `visualize_scan_position_pc_correction.py` 和 `score_scan_position_pc_correction.py` 用 scan position 估计不同 pattern 在扫描视场中造成的 PC 偏移，并比较不同 PC correction 模型。
 - 注意：`visualize_edax_match_3d.py` 需要当前 Python 环境安装 `pyvista`/VTK；未安装时，其余 2D 投影和诊断脚本仍可正常运行。
 
+### 5. 固定 PC 的 [111] 单晶倾斜模拟
+
+- `simulate_111_tilt_kikuchi_patterns.py` 用固定 EDAX PC 模拟 [111] 单晶 Kikuchi pattern。
+- 默认从 `D:\project\EBSD2026\ebsd.edaxh5` 的 Area 1 HighR 读取 `X-Star/Y-Star/Z-Star` 作为固定 PC。
+- 0 deg 时 detector 中心方向对准晶体 `[111]`，上下倾斜只绕 detector 水平轴改变一个角度变量。
+- 默认倾斜角为 `-10, -5, 0, 5, 10` deg。
+- 默认 master pattern 为 kikuchipy 自带 Ni/FCC master pattern；如果有 Cu master sphere，可用 `--master` 替换。
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -53,6 +61,7 @@
 - `visualize_edax_match_3d.py`
 - `visualize_scan_position_pc_correction.py`
 - `score_scan_position_pc_correction.py`
+- `simulate_111_tilt_kikuchi_patterns.py`
 - `preview_gltf_pyvista.py`
 
 ## 运行示例
@@ -79,7 +88,25 @@ D:\anaconda3\envs\torch\python.exe .\diagnose_edax_transform_chain.py `
   --output-dir outputs\github_edax_visualizations\diagnose_area1_high_idx2661
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\simulate_111_tilt_kikuchi_patterns.py `
+  --output-dir outputs\simulated_111_tilt_patterns `
+  --height 480 `
+  --width 480 `
+  --tilts -10 -5 0 5 10 `
+  --mode corrected
+```
+
 ## 版本改动
+
+### 2026-06-19
+
+- 新增 `simulate_111_tilt_kikuchi_patterns.py`。
+- 支持固定 EDAX PC 下的 [111] 单晶上下倾斜模拟。
+- 当前默认 PC 从 H5 中读取：`(0.528627, 0.592593, 0.615038)`。
+- 已生成两组本地输出：
+  - `outputs/simulated_111_tilt_patterns/simulated_111_tilt_contact_sheet.png`
+  - `outputs/simulated_111_tilt_patterns_raw/simulated_111_tilt_contact_sheet.png`
 
 ### 2026-06-08
 
