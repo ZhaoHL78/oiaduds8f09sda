@@ -66,6 +66,17 @@
 - 输出两个透明背景 IPF，每张包含四个标注点。
 - 同时输出 `simulated_ipf_indexed_points.csv`，记录每个点的表观方向和最近整数 Miller 指数。
 
+### 7. (1,2,3) 探测器/样品倾斜分离模拟
+
+- `simulate_123_detector_sample_tilt_cases.py` 专门生成 `(1,2,3)` 的四个几何工况：
+  - 默认探测器和样品位置。
+  - 探测器向上倾斜 5 deg。
+  - 样品向上倾斜 2 deg。
+  - 样品向下倾斜 2 deg。
+- 所有 pattern 使用 `PC=(0.5,0.5,0.5)`，输出为 EDAX 圆形透明 PNG。
+- 对应 IPF 图中，前两个工况使用黑色空心圆，后两个工况使用红色空心圆。
+- metadata 中记录每个工况对应的表观方向和最近整数 Miller 指数。
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -76,6 +87,7 @@
 - `score_scan_position_pc_correction.py`
 - `simulate_111_tilt_kikuchi_patterns.py`
 - `annotate_simulated_ipf_points.py`
+- `simulate_123_detector_sample_tilt_cases.py`
 - `preview_gltf_pyvista.py`
 
 ## 运行示例
@@ -152,6 +164,10 @@ D:\anaconda3\envs\torch\python.exe .\annotate_simulated_ipf_points.py `
   --output-dir outputs\ipf_annotations
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\simulate_123_detector_sample_tilt_cases.py
+```
+
 ## 版本改动
 
 ### 2026-06-22
@@ -166,6 +182,11 @@ D:\anaconda3\envs\torch\python.exe .\annotate_simulated_ipf_points.py `
 - 已生成两个透明背景反极图：
   - `outputs/ipf_annotations/ipf_zone_123_tilt_points_transparent.png`
   - `outputs/ipf_annotations/ipf_zone_135_pcx_points_transparent.png`
+- 新增 `simulate_123_detector_sample_tilt_cases.py`，生成 `(1,2,3)` 的四个探测器/样品倾斜分离工况。
+- 已生成四张新的透明 Kikuchi pattern：
+  - `outputs/simulated_123_detector_sample_tilt_cases/individual/*.png`
+- 已生成黑圈/红圈标注的透明 IPF：
+  - `outputs/ipf_annotations/ipf_zone_123_detector_sample_tilt_points_transparent.png`
 
 ### 2026-06-19
 
