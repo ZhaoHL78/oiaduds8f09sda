@@ -28,7 +28,9 @@ DEFAULT_MAP_GROUP = "/20260512/Cu/Area 1/OIM Map 1HighR"
 
 @dataclass(frozen=True)
 class SimulationResult:
+    label: str
     tilt_deg: float
+    pc_edax: tuple[float, float, float]
     pattern: np.ndarray
     output_path: Path
 
@@ -72,15 +74,23 @@ def rotation_x_row(deg: float) -> np.ndarray:
     )
 
 
-def detector_to_111_crystal_matrix() -> np.ndarray:
-    """Map detector x/y/z directions to a crystal frame with z_d || [111]."""
-    z111 = np.array([1.0, 1.0, 1.0], dtype=np.float64)
-    z111 /= np.linalg.norm(z111)
-    x110 = np.array([1.0, -1.0, 0.0], dtype=np.float64)
-    x110 /= np.linalg.norm(x110)
-    y_axis = np.cross(z111, x110)
+def detector_to_zone_crystal_matrix(zone: tuple[float, float, float]) -> np.ndarray:
+    """Map detector x/y/z directions to a crystal frame with z_d || zone."""
+    z_axis = np.array(zone, dtype=np.float64)
+    norm = float(np.linalg.norm(z_axis))
+    if norm < 1e-12:
+        raise ValueError("zone axis cannot be zero")
+    z_axis /= norm
+
+    h, k, _l = z_axis
+    if abs(h) + abs(k) > 1e-12:
+        x_axis = np.array([k, -h, 0.0], dtype=np.float64)
+    else:
+        x_axis = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    x_axis /= np.linalg.norm(x_axis)
+    y_axis = np.cross(z_axis, x_axis)
     y_axis /= np.linalg.norm(y_axis)
-    return np.vstack([x110, y_axis, z111])
+    return np.vstack([x_axis, y_axis, z_axis])
 
 
 def normalize_to_uint8(pattern: np.ndarray, percentiles: tuple[float, float]) -> np.ndarray:
@@ -108,11 +118,12 @@ def circular_alpha(shape: tuple[int, int], inset: int = 2, supersample: int = 4)
 def simulate_pattern(
     detector_rays: np.ndarray,
     tilt_deg: float,
+    zone: tuple[float, float, float],
     upper_sampler,
     lower_sampler,
     shape: tuple[int, int],
 ) -> np.ndarray:
-    matrix = detector_to_111_crystal_matrix()
+    matrix = detector_to_zone_crystal_matrix(zone)
     crystal_vectors = detector_rays @ rotation_x_row(tilt_deg) @ matrix
     crystal_vectors /= np.linalg.norm(crystal_vectors, axis=1, keepdims=True) + 1e-12
     values = sample_master(crystal_vectors, upper_sampler, lower_sampler)
@@ -140,6 +151,7 @@ def save_contact_sheet(
     results: list[SimulationResult],
     output_path: Path,
     pc_edax: tuple[float, float, float],
+    zone: tuple[float, float, float],
     master_path: Path,
     mode: str,
     percentiles: tuple[float, float],
@@ -167,12 +179,13 @@ def save_contact_sheet(
                 linewidth=0.6,
                 alpha=0.65,
             )
-        ax.set_title(f"tilt {result.tilt_deg:+.0f} deg")
+        ax.set_title(result.label)
         ax.axis("off")
 
     fig.suptitle(
         (
-            "[111] single-crystal Kikuchi simulation | fixed EDAX PC="
+            f"[{zone[0]:g} {zone[1]:g} {zone[2]:g}] single-crystal Kikuchi simulation | "
+            "EDAX PC="
             f"({pc_edax[0]:.6f}, {pc_edax[1]:.6f}, {pc_edax[2]:.6f}) | "
             f"master={master_path.name} | mode={mode}"
             f"{' | circular transparent PNGs' if circular_transparent else ''}"
@@ -189,6 +202,7 @@ def write_metadata(
     results: list[SimulationResult],
     output_path: Path,
     pc_edax: tuple[float, float, float],
+    zone: tuple[float, float, float],
     shape: tuple[int, int],
     master_path: Path,
     mode: str,
@@ -199,6 +213,9 @@ def write_metadata(
             file,
             fieldnames=[
                 "tilt_deg",
+                "zone_h",
+                "zone_k",
+                "zone_l",
                 "pc_x_edax",
                 "pc_y_edax",
                 "pc_z_edax",
@@ -215,9 +232,12 @@ def write_metadata(
             writer.writerow(
                 {
                     "tilt_deg": result.tilt_deg,
-                    "pc_x_edax": pc_edax[0],
-                    "pc_y_edax": pc_edax[1],
-                    "pc_z_edax": pc_edax[2],
+                    "zone_h": zone[0],
+                    "zone_k": zone[1],
+                    "zone_l": zone[2],
+                    "pc_x_edax": result.pc_edax[0],
+                    "pc_y_edax": result.pc_edax[1],
+                    "pc_z_edax": result.pc_edax[2],
                     "height": shape[0],
                     "width": shape[1],
                     "master": str(master_path),
@@ -231,8 +251,8 @@ def write_metadata(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Simulate [111] single-crystal Kikuchi patterns with fixed EDAX PC "
-            "and one vertical tilt variable."
+            "Simulate zone-axis single-crystal Kikuchi patterns with EDAX PC, "
+            "vertical tilt, and optional horizontal PC drift."
         )
     )
     parser.add_argument("--h5", type=Path, default=DEFAULT_H5)
@@ -241,6 +261,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--width", type=int, default=480)
+    parser.add_argument(
+        "--zone",
+        type=float,
+        nargs=3,
+        default=[1.0, 1.0, 1.0],
+        metavar=("H", "K", "L"),
+        help="Crystal direction aligned with the detector center at zero tilt.",
+    )
     parser.add_argument(
         "--pc",
         type=float,
@@ -254,6 +282,13 @@ def parse_args() -> argparse.Namespace:
         type=float,
         nargs="+",
         default=[-10.0, -5.0, 0.0, 5.0, 10.0],
+    )
+    parser.add_argument(
+        "--pc-x-values",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Optional EDAX PCx sweep. PCy and PCz come from --pc or the H5 default PC.",
     )
     parser.add_argument(
         "--mode",
@@ -286,6 +321,7 @@ def main() -> None:
     args = parse_args()
     shape = (int(args.height), int(args.width))
     pc_edax = tuple(args.pc) if args.pc is not None else read_default_pc(args.h5, args.map_group)
+    zone = tuple(float(v) for v in args.zone)
 
     upper, lower, _upper_raw, _lower_raw = load_master_samplers(args.master)
     upper = preprocess_master_hemisphere(upper, args.mode)
@@ -293,32 +329,51 @@ def main() -> None:
     upper_sampler = make_master_sampler(upper)
     lower_sampler = make_master_sampler(lower)
 
-    detector_rays = detector_rays_edax(shape, pc_edax)
     results: list[SimulationResult] = []
-    for tilt in args.tilts:
-        pattern = simulate_pattern(
-            detector_rays=detector_rays,
-            tilt_deg=float(tilt),
-            upper_sampler=upper_sampler,
-            lower_sampler=lower_sampler,
-            shape=shape,
-        )
-        stem = f"sim_111_tilt_{float(tilt):+05.1f}deg".replace("+", "p").replace("-", "m")
-        output_path = args.output_dir / "individual" / f"{stem}.png"
-        save_pattern_png(
-            pattern,
-            output_path,
-            tuple(args.percentiles),
-            circular_transparent=args.circular_transparent,
-            circle_inset=args.circle_inset,
-        )
-        results.append(SimulationResult(float(tilt), pattern, output_path))
-        print(f"saved tilt {float(tilt):+g} deg: {output_path}")
+    pc_values = [pc_edax]
+    if args.pc_x_values is not None:
+        pc_values = [(float(pcx), pc_edax[1], pc_edax[2]) for pcx in args.pc_x_values]
+
+    for current_pc in pc_values:
+        detector_rays = detector_rays_edax(shape, current_pc)
+        for tilt in args.tilts:
+            pattern = simulate_pattern(
+                detector_rays=detector_rays,
+                tilt_deg=float(tilt),
+                zone=zone,
+                upper_sampler=upper_sampler,
+                lower_sampler=lower_sampler,
+                shape=shape,
+            )
+            zone_text = f"{int(zone[0])}{int(zone[1])}{int(zone[2])}"
+            stem = (
+                f"sim_{zone_text}_tilt_{float(tilt):+05.1f}deg_"
+                f"pcx{current_pc[0]:.3f}_pcy{current_pc[1]:.3f}_pcz{current_pc[2]:.3f}"
+            )
+            stem = stem.replace("+", "p").replace("-", "m").replace(".", "p")
+            output_path = args.output_dir / "individual" / f"{stem}.png"
+            save_pattern_png(
+                pattern,
+                output_path,
+                tuple(args.percentiles),
+                circular_transparent=args.circular_transparent,
+                circle_inset=args.circle_inset,
+            )
+            label = (
+                f"tilt {float(tilt):+g} deg\n"
+                f"PC=({current_pc[0]:.3f},{current_pc[1]:.3f},{current_pc[2]:.3f})"
+            )
+            results.append(SimulationResult(label, float(tilt), current_pc, pattern, output_path))
+            print(
+                f"saved zone=({zone[0]:g},{zone[1]:g},{zone[2]:g}) "
+                f"tilt {float(tilt):+g} deg PC={current_pc}: {output_path}"
+            )
 
     save_contact_sheet(
         results=results,
-        output_path=args.output_dir / "simulated_111_tilt_contact_sheet.png",
+        output_path=args.output_dir / "simulated_zone_contact_sheet.png",
         pc_edax=pc_edax,
+        zone=zone,
         master_path=args.master,
         mode=args.mode,
         percentiles=tuple(args.percentiles),
@@ -326,16 +381,18 @@ def main() -> None:
     )
     write_metadata(
         results=results,
-        output_path=args.output_dir / "simulated_111_tilt_metadata.csv",
+        output_path=args.output_dir / "simulated_zone_metadata.csv",
         pc_edax=pc_edax,
+        zone=zone,
         shape=shape,
         master_path=args.master,
         mode=args.mode,
         circular_transparent=args.circular_transparent,
     )
-    print(f"fixed EDAX PC: {pc_edax}")
-    print(f"contact sheet: {args.output_dir / 'simulated_111_tilt_contact_sheet.png'}")
-    print(f"metadata: {args.output_dir / 'simulated_111_tilt_metadata.csv'}")
+    print(f"base EDAX PC: {pc_edax}")
+    print(f"zone axis: {zone}")
+    print(f"contact sheet: {args.output_dir / 'simulated_zone_contact_sheet.png'}")
+    print(f"metadata: {args.output_dir / 'simulated_zone_metadata.csv'}")
 
 
 if __name__ == "__main__":

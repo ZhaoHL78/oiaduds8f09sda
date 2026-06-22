@@ -45,13 +45,15 @@
 - `visualize_scan_position_pc_correction.py` 和 `score_scan_position_pc_correction.py` 用 scan position 估计不同 pattern 在扫描视场中造成的 PC 偏移，并比较不同 PC correction 模型。
 - 注意：`visualize_edax_match_3d.py` 需要当前 Python 环境安装 `pyvista`/VTK；未安装时，其余 2D 投影和诊断脚本仍可正常运行。
 
-### 5. 固定 PC 的 [111] 单晶倾斜模拟
+### 5. 固定 PC 的单晶 zone-axis 倾斜和 PC 漂移模拟
 
-- `simulate_111_tilt_kikuchi_patterns.py` 用固定 EDAX PC 模拟 [111] 单晶 Kikuchi pattern。
+- `simulate_111_tilt_kikuchi_patterns.py` 用固定 EDAX PC 模拟指定 zone axis 的单晶 Kikuchi pattern。
 - 默认从 `D:\project\EBSD2026\ebsd.edaxh5` 的 Area 1 HighR 读取 `X-Star/Y-Star/Z-Star` 作为固定 PC。
-- 0 deg 时 detector 中心方向对准晶体 `[111]`，上下倾斜只绕 detector 水平轴改变一个角度变量。
+- 可用 `--zone H K L` 指定 0 deg 时 detector 中心方向对准的晶体方向，例如 `--zone 1 2 3`。
+- 上下倾斜只绕 detector 水平轴改变一个角度变量。
 - 默认倾斜角为 `-10, -5, 0, 5, 10` deg。
 - 可用 `--pc 0.5 0.5 0.5` 指定固定 PC。
+- 可用 `--pc-x-values 0.4 0.45 0.5 0.55` 模拟横向 beam shift / PCx 漂移。
 - 可用 `--circular-transparent` 输出 EDAX 风格圆形 detector PNG，圆外 alpha=0。
 - 默认 master pattern 为 kikuchipy 自带 Ni/FCC master pattern；如果有 Cu master sphere，可用 `--master` 替换。
 
@@ -110,7 +112,41 @@ D:\anaconda3\envs\torch\python.exe .\simulate_111_tilt_kikuchi_patterns.py `
   --circular-transparent
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\simulate_111_tilt_kikuchi_patterns.py `
+  --output-dir outputs\simulated_123_tilt_pc050_circular_transparent `
+  --height 1024 `
+  --width 1024 `
+  --zone 1 2 3 `
+  --pc 0.5 0.5 0.5 `
+  --tilts 0 -2 2 5 `
+  --mode corrected `
+  --circular-transparent
+```
+
+```powershell
+D:\anaconda3\envs\torch\python.exe .\simulate_111_tilt_kikuchi_patterns.py `
+  --output-dir outputs\simulated_135_pcx_sweep_circular_transparent `
+  --height 1024 `
+  --width 1024 `
+  --zone 1 3 5 `
+  --pc 0.5 0.5 0.5 `
+  --tilts 0 `
+  --pc-x-values 0.4 0.45 0.5 0.55 `
+  --mode corrected `
+  --circular-transparent
+```
+
 ## 版本改动
+
+### 2026-06-22
+
+- 扩展 `simulate_111_tilt_kikuchi_patterns.py`，支持任意 zone axis：`--zone H K L`。
+- 新增横向 PC 漂移模拟参数：`--pc-x-values`。
+- 已生成 `(1,2,3)` zone axis 的倾斜序列，`PC=(0.5,0.5,0.5)`，倾斜角 `0,-2,2,5`：
+  - `outputs/simulated_123_tilt_pc050_circular_transparent/individual/*.png`
+- 已生成 `(1,3,5)` zone axis 的横向 beam shift / PCx 漂移序列，倾斜角 0 deg，`PCx=0.4,0.45,0.5,0.55`：
+  - `outputs/simulated_135_pcx_sweep_circular_transparent/individual/*.png`
 
 ### 2026-06-19
 
