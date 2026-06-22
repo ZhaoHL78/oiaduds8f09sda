@@ -57,6 +57,15 @@
 - 可用 `--circular-transparent` 输出 EDAX 风格圆形 detector PNG，圆外 alpha=0。
 - 默认 master pattern 为 kikuchipy 自带 Ni/FCC master pattern；如果有 Cu master sphere，可用 `--master` 替换。
 
+### 6. 模拟 pattern 的 IPF 标注
+
+- `annotate_simulated_ipf_points.py` 将模拟得到的表观方向投到标准立方晶体反极图三角区。
+- 当前用于两组模拟数据：
+  - `(1,2,3)` zone axis，`PC=(0.5,0.5,0.5)`，倾斜角 `0,-2,2,5`。
+  - `(1,3,5)` zone axis，倾斜角 0 deg，统一标定 PC 为 `(0.5,0.5,0.5)`，模拟实际 `PCx=0.4,0.45,0.5,0.55` 的横向 beam shift。
+- 输出两个透明背景 IPF，每张包含四个标注点。
+- 同时输出 `simulated_ipf_indexed_points.csv`，记录每个点的表观方向和最近整数 Miller 指数。
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -66,6 +75,7 @@
 - `visualize_scan_position_pc_correction.py`
 - `score_scan_position_pc_correction.py`
 - `simulate_111_tilt_kikuchi_patterns.py`
+- `annotate_simulated_ipf_points.py`
 - `preview_gltf_pyvista.py`
 
 ## 运行示例
@@ -137,6 +147,11 @@ D:\anaconda3\envs\torch\python.exe .\simulate_111_tilt_kikuchi_patterns.py `
   --circular-transparent
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\annotate_simulated_ipf_points.py `
+  --output-dir outputs\ipf_annotations
+```
+
 ## 版本改动
 
 ### 2026-06-22
@@ -147,6 +162,10 @@ D:\anaconda3\envs\torch\python.exe .\simulate_111_tilt_kikuchi_patterns.py `
   - `outputs/simulated_123_tilt_pc050_circular_transparent/individual/*.png`
 - 已生成 `(1,3,5)` zone axis 的横向 beam shift / PCx 漂移序列，倾斜角 0 deg，`PCx=0.4,0.45,0.5,0.55`：
   - `outputs/simulated_135_pcx_sweep_circular_transparent/individual/*.png`
+- 新增 `annotate_simulated_ipf_points.py`，用统一 `PC=(0.5,0.5,0.5)` 对两组模拟结果做 IPF 标注。
+- 已生成两个透明背景反极图：
+  - `outputs/ipf_annotations/ipf_zone_123_tilt_points_transparent.png`
+  - `outputs/ipf_annotations/ipf_zone_135_pcx_points_transparent.png`
 
 ### 2026-06-19
 
