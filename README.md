@@ -4,6 +4,8 @@
 
 旧的球面匹配、Hough/Radon 图匹配、DIP、PC/radius refinement 和批量优化实验脚本已经删除。当前重点不是继续做自动匹配优化，而是先理解 GitHub 拉入的 EBSD 代码中每一步坐标变换的含义。
 
+如果只想快速了解当前项目主线、核心脚本和推荐路线，先读 `PROJECT_CORE.md`。
+
 ## 目前实现的方法
 
 ### 1. EDAX 数据读取
@@ -169,6 +171,13 @@ D:\anaconda3\envs\torch\python.exe .\simulate_123_detector_sample_tilt_cases.py
 ```
 
 ## 版本改动
+
+### 2026-06-23
+
+- 新增 `PROJECT_CORE.md`，整理当前 EBSD 项目的核心目标、数据主线、核心脚本、推荐路线和 GitHub 提交规则。
+- 新增 `export_h5_ipf_bse_maps.py`，用于从 EDAX H5 导出 IPF-Z、IQ/CI、SEM/BSE、FOV 和 montage，并改为命令行参数驱动，避免写死本机路径。
+- 新增 `export_publication_h5_kikuchi_bands.py`，用于导出透明背景 Kikuchi pattern、H5/OHP band 和叠加图，便于论文图和报告图使用。
+- 继续保持 GitHub 只提交代码和文档，不提交 H5/UP2 原始数据、输出图、缓存或模型权重。
 
 ### 2026-06-22
 
