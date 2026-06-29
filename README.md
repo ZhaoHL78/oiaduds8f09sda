@@ -98,6 +98,14 @@
 - 输出 SEM 标注图、raw Kikuchi 显示图、圆形透明 Kikuchi 和 SEM/Kikuchi 并排图。
 - Kikuchi 只做显示灰度归一化，不做旋转、翻转或几何校正。
 
+### 10. H5 全部 mapping 的 SEM 与 UP2 文件名对应
+
+- `export_h5_mapping_sem_correspondence.py` 读取 `20251209Pt.edaxh5` 中所有含 `ANG/DATA` 和 `SEM-PRIAS Images/DATA/SEM` 的 OIM mapping。
+- 导出每个 mapping 对应的 SEM 图，并生成总览 contact sheet。
+- 自动扫描本机 UP2 文件，也会解析 Windows 回收站中的 `$I*.up2` 元数据，把 `$R*.up2` 恢复为原始 UP2 文件名。
+- 当前对应规则是 `specimen + pattern count` 精确匹配，并在同一组内按采集/修改时间顺序配对。
+- 输出 `h5_mapping_sem_correspondence.csv`，记录 H5 mapping、SEM 图路径、匹配到的原始 UP2 文件名和实际本机位置。
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -111,6 +119,7 @@
 - `simulate_123_detector_sample_tilt_cases.py`
 - `classify_pt1_ebsd_data.py`
 - `export_pt1_sem_kikuchi_pairs.py`
+- `export_h5_mapping_sem_correspondence.py`
 - `preview_gltf_pyvista.py`
 
 ## 运行示例
@@ -204,6 +213,12 @@ D:\anaconda3\envs\torch\python.exe .\export_pt1_sem_kikuchi_pairs.py `
   --output-dir outputs\pt1_sem_kikuchi_pairs
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\export_h5_mapping_sem_correspondence.py `
+  --h5 D:\EBSD-data\Pt-1\20251209Pt.edaxh5 `
+  --output-dir outputs\h5_mapping_sem_correspondence
+```
+
 ## 版本改动
 
 ### 2026-06-29
@@ -211,6 +226,7 @@ D:\anaconda3\envs\torch\python.exe .\export_pt1_sem_kikuchi_pairs.py `
 - 从 GitHub `origin/main` 检查更新，本地代码已是最新版本。
 - 新增 `classify_pt1_ebsd_data.py`，用于读取 `D:\EBSD-data\Pt-1` 的 EDAX H5/UP2 元数据并分类。
 - 新增 `export_pt1_sem_kikuchi_pairs.py`，用于读取每个 Pt-1 EBSD map 对应的 SEM，并导出一张同 index 的 raw Kikuchi pattern。
+- 新增 `export_h5_mapping_sem_correspondence.py`，用于导出 H5 中全部 OIM mapping 的 SEM，并和本机/回收站中可找到的 UP2 原始文件名做对应。
 - 分类输出保存在 `outputs/pt1_classification/`，仅用于本地分析，不提交 GitHub。
 - 当前 Pt-1 分类逻辑区分：
   - H5 与 UP2 能一一匹配的可靠分析组。
