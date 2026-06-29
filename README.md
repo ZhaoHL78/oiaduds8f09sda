@@ -79,6 +79,17 @@
 - 对应 IPF 图中，前两个工况使用黑色空心圆，后两个工况使用红色空心圆。
 - metadata 中记录每个工况对应的表观方向和最近整数 Miller 指数。
 
+### 8. Pt-1 EDAX 数据分类
+
+- `classify_pt1_ebsd_data.py` 用于读取 `D:\EBSD-data\Pt-1` 中的 EDAX H5 和 UP2 文件元信息。
+- 只读取 H5 map 元数据、ANG/OHP 统计和 UP2 header，不搬运原始大体积 pattern 数据。
+- 输出：
+  - `pt1_h5_maps.csv`：Pt-1 H5 中每个 OIM map 的尺寸、PC、phase、IQ/CI/Fit、OHP 信息。
+  - `pt1_up2_files.csv`：每个 UP2 文件的分辨率、pattern 数量、文件大小。
+  - `pt1_match_classification.csv`：H5 map 与 UP2 的一一匹配/未匹配分类。
+  - `pt1_classification_summary.md`：便于直接阅读的分类总结。
+- 当前匹配规则是：先按 pattern count 精确匹配，再在同一 count 内按采集时间顺序配对。
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -90,6 +101,7 @@
 - `simulate_111_tilt_kikuchi_patterns.py`
 - `annotate_simulated_ipf_points.py`
 - `simulate_123_detector_sample_tilt_cases.py`
+- `classify_pt1_ebsd_data.py`
 - `preview_gltf_pyvista.py`
 
 ## 运行示例
@@ -170,7 +182,22 @@ D:\anaconda3\envs\torch\python.exe .\annotate_simulated_ipf_points.py `
 D:\anaconda3\envs\torch\python.exe .\simulate_123_detector_sample_tilt_cases.py
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\classify_pt1_ebsd_data.py `
+  --data-dir D:\EBSD-data\Pt-1 `
+  --output-dir outputs\pt1_classification
+```
+
 ## 版本改动
+
+### 2026-06-29
+
+- 从 GitHub `origin/main` 检查更新，本地代码已是最新版本。
+- 新增 `classify_pt1_ebsd_data.py`，用于读取 `D:\EBSD-data\Pt-1` 的 EDAX H5/UP2 元数据并分类。
+- 分类输出保存在 `outputs/pt1_classification/`，仅用于本地分析，不提交 GitHub。
+- 当前 Pt-1 分类逻辑区分：
+  - H5 与 UP2 能一一匹配的可靠分析组。
+  - 只有 UP2 原始 pattern、未找到 Pt-1 H5 元数据对应关系的孤立组。
 
 ### 2026-06-23
 
