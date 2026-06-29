@@ -106,6 +106,14 @@
 - 当前对应规则是 `specimen + pattern count` 精确匹配，并在同一组内按采集/修改时间顺序配对。
 - 输出 `h5_mapping_sem_correspondence.csv`，记录 H5 mapping、SEM 图路径、匹配到的原始 UP2 文件名和实际本机位置。
 
+### 11. UP2 到 EBSD 与 Kikuchi 的逐文件对应
+
+- `export_up2_ebsd_kikuchi_correspondence.py` 以 UP2 文件为主线读取 `E:\ZHL\EBSD-RAW\20251209Pt`。
+- 对每个 UP2 判断是否能对应到 H5 中的 EBSD mapping。
+- 匹配成功的 UP2：从 H5 中选取 valid 且 IQ 最高的 index，读取同 index 的 raw Kikuchi，并输出 SEM 标注点 + Kikuchi 并排图。
+- 未匹配的 UP2：标记为无 H5 EBSD 对应；如果 UP2 有 pattern，则导出中心 index 的 Kikuchi 预览用于人工检查。
+- 输出 `up2_ebsd_kikuchi_correspondence.csv` 和 matched/unmatched contact sheet。
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -120,6 +128,7 @@
 - `classify_pt1_ebsd_data.py`
 - `export_pt1_sem_kikuchi_pairs.py`
 - `export_h5_mapping_sem_correspondence.py`
+- `export_up2_ebsd_kikuchi_correspondence.py`
 - `preview_gltf_pyvista.py`
 
 ## 运行示例
@@ -219,6 +228,13 @@ D:\anaconda3\envs\torch\python.exe .\export_h5_mapping_sem_correspondence.py `
   --output-dir outputs\h5_mapping_sem_correspondence
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\export_up2_ebsd_kikuchi_correspondence.py `
+  --h5 E:\ZHL\EBSD-RAW\20251209Pt\20251209Pt.edaxh5 `
+  --up2-root E:\ZHL\EBSD-RAW\20251209Pt `
+  --output-dir outputs\up2_ebsd_kikuchi_correspondence_E_20251209Pt
+```
+
 ## 版本改动
 
 ### 2026-06-29
@@ -227,6 +243,7 @@ D:\anaconda3\envs\torch\python.exe .\export_h5_mapping_sem_correspondence.py `
 - 新增 `classify_pt1_ebsd_data.py`，用于读取 `D:\EBSD-data\Pt-1` 的 EDAX H5/UP2 元数据并分类。
 - 新增 `export_pt1_sem_kikuchi_pairs.py`，用于读取每个 Pt-1 EBSD map 对应的 SEM，并导出一张同 index 的 raw Kikuchi pattern。
 - 新增 `export_h5_mapping_sem_correspondence.py`，用于导出 H5 中全部 OIM mapping 的 SEM，并和本机/回收站中可找到的 UP2 原始文件名做对应。
+- 新增 `export_up2_ebsd_kikuchi_correspondence.py`，用于逐个 UP2 建立 EBSD mapping 与 Kikuchi 示例对应。
 - 分类输出保存在 `outputs/pt1_classification/`，仅用于本地分析，不提交 GitHub。
 - 当前 Pt-1 分类逻辑区分：
   - H5 与 UP2 能一一匹配的可靠分析组。
