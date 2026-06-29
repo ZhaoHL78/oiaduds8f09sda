@@ -22,6 +22,7 @@
 - `annotate_simulated_ipf_points.py`: 将模拟 pattern 的表观方向标注到立方晶体反极图。
 - `simulate_123_detector_sample_tilt_cases.py`: 分离模拟 `(1,2,3)` zone axis 的探测器倾斜和样品倾斜工况。
 - `classify_pt1_ebsd_data.py`: 读取 `D:\EBSD-data\Pt-1` 的 H5/UP2 元数据，并把可匹配组和孤立 UP2 组分类。
+- `export_pt1_sem_kikuchi_pairs.py`: 对 Pt-1 的每个可靠 H5-UP2 对应组，导出 SEM 标注图和同 index 的 raw Kikuchi pattern。
 
 ## 当前推荐路线
 
@@ -31,6 +32,7 @@
 4. 对坐标链路有疑问时，先跑 `diagnose_edax_transform_chain.py`，枚举图像方向、tilt 和 orientation matrix convention。
 5. 用 `visualize_edax_projection_sets.py` / `visualize_edax_match_3d.py` 做批量和三维可视化。
 6. 对新的 Pt-1 多角度数据，先跑 `classify_pt1_ebsd_data.py`，只把 H5 与 UP2 精确匹配的组用于后续 Kikuchi pattern、PC、orientation、OHP band 联合分析。
+7. 需要快速核对 EBSD map 与 raw Kikuchi 对应关系时，跑 `export_pt1_sem_kikuchi_pairs.py`，用 SEM 上的标注点检查所选 pattern 的空间来源。
 
 ## 多角度 mapping align 方向
 

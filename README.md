@@ -90,6 +90,14 @@
   - `pt1_classification_summary.md`：便于直接阅读的分类总结。
 - 当前匹配规则是：先按 pattern count 精确匹配，再在同一 count 内按采集时间顺序配对。
 
+### 9. Pt-1 SEM 与对应 Kikuchi 导出
+
+- `export_pt1_sem_kikuchi_pairs.py` 读取 Pt-1 分类后的可靠 H5-UP2 对应组。
+- 每个 EBSD map 从 H5 读取对应的 `SEM-PRIAS Images/DATA/SEM`。
+- 每个 map 选取 `ANG/DATA` 中 valid 且 IQ 最高的位置，从对应 UP2 直接读取同 index 的 raw Kikuchi pattern。
+- 输出 SEM 标注图、raw Kikuchi 显示图、圆形透明 Kikuchi 和 SEM/Kikuchi 并排图。
+- Kikuchi 只做显示灰度归一化，不做旋转、翻转或几何校正。
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -102,6 +110,7 @@
 - `annotate_simulated_ipf_points.py`
 - `simulate_123_detector_sample_tilt_cases.py`
 - `classify_pt1_ebsd_data.py`
+- `export_pt1_sem_kikuchi_pairs.py`
 - `preview_gltf_pyvista.py`
 
 ## 运行示例
@@ -188,12 +197,20 @@ D:\anaconda3\envs\torch\python.exe .\classify_pt1_ebsd_data.py `
   --output-dir outputs\pt1_classification
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\export_pt1_sem_kikuchi_pairs.py `
+  --h5 D:\EBSD-data\Pt-1\20251209Pt.edaxh5 `
+  --classification-csv outputs\pt1_classification\pt1_match_classification.csv `
+  --output-dir outputs\pt1_sem_kikuchi_pairs
+```
+
 ## 版本改动
 
 ### 2026-06-29
 
 - 从 GitHub `origin/main` 检查更新，本地代码已是最新版本。
 - 新增 `classify_pt1_ebsd_data.py`，用于读取 `D:\EBSD-data\Pt-1` 的 EDAX H5/UP2 元数据并分类。
+- 新增 `export_pt1_sem_kikuchi_pairs.py`，用于读取每个 Pt-1 EBSD map 对应的 SEM，并导出一张同 index 的 raw Kikuchi pattern。
 - 分类输出保存在 `outputs/pt1_classification/`，仅用于本地分析，不提交 GitHub。
 - 当前 Pt-1 分类逻辑区分：
   - H5 与 UP2 能一一匹配的可靠分析组。
