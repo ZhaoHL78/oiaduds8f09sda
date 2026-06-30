@@ -25,6 +25,7 @@
 - `export_pt1_sem_kikuchi_pairs.py`: 对 Pt-1 的每个可靠 H5-UP2 对应组，导出 SEM 标注图和同 index 的 raw Kikuchi pattern。
 - `export_h5_mapping_sem_correspondence.py`: 导出 H5 中全部 OIM mapping 的 SEM 图，并和本机/回收站中可找到的 UP2 原始文件名建立对应表。
 - `export_up2_ebsd_kikuchi_correspondence.py`: 以 UP2 为主线，逐文件输出其对应 H5 EBSD mapping、SEM 标注点和 Kikuchi 示例。
+- `align_pt1_inplane_sem_common_circle.py`: 对 Pt-1 四组 in-plane EBSD 的 SEM 进行反向旋转、平移微调，并计算四组共同有效区域的最大圆形 ROI。
 
 ## 当前推荐路线
 
@@ -37,6 +38,7 @@
 7. 需要快速核对 EBSD map 与 raw Kikuchi 对应关系时，跑 `export_pt1_sem_kikuchi_pairs.py`，用 SEM 上的标注点检查所选 pattern 的空间来源。
 8. 需要从 H5 全局整理 mapping/SEM/UP2 文件名关系时，跑 `export_h5_mapping_sem_correspondence.py`，先看 `h5_mapping_sem_contact_sheet.png` 和 `h5_mapping_sem_correspondence.csv`。
 9. 需要按“每个 UP2 文件”核对 EBSD 和 Kikuchi 时，跑 `export_up2_ebsd_kikuchi_correspondence.py`，优先查看 `up2_ebsd_kikuchi_correspondence.csv`。
+10. 需要对 Pt-1 四组 in-plane 旋转 EBSD 取共同分析区域时，跑 `align_pt1_inplane_sem_common_circle.py`，使用输出的最大圆形 ROI。
 
 ## 多角度 mapping align 方向
 

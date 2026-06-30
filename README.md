@@ -114,6 +114,18 @@
 - 未匹配的 UP2：标记为无 H5 EBSD 对应；如果 UP2 有 pattern，则导出中心 index 的 Kikuchi 预览用于人工检查。
 - 输出 `up2_ebsd_kikuchi_correspondence.csv` 和 matched/unmatched contact sheet。
 
+### 12. Pt-1 四组 in-plane EBSD 的 SEM 对齐和公共圆 ROI
+
+- `align_pt1_inplane_sem_common_circle.py` 读取 Pt-1 中同网格的四组 in-plane EBSD：
+  - `Area 90degree / OIM Map 1`
+  - `Area 180degree / OIM Map 1`
+  - `Area 270degree / OIM Map 1`
+  - `Area 360degree / OIM Map 1`
+- 同时读取对应的 UP2 文件，验证 H5 pattern count 与 UP2 pattern count 一致。
+- 以 `Area 90degree` 为参考，对其余 SEM 反向旋转 `-90/-180/-270` 度，并用 SEM 边缘图做保守平移微调。
+- 由四张 transformed SEM 的有效 mask 交集计算最大内切圆，作为四组 EBSD 的公共 circular ROI。
+- 输出 aligned SEM、overlay、公共 mask、最大圆、以及该圆反投影回原始 SEM 的图。
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -129,6 +141,7 @@
 - `export_pt1_sem_kikuchi_pairs.py`
 - `export_h5_mapping_sem_correspondence.py`
 - `export_up2_ebsd_kikuchi_correspondence.py`
+- `align_pt1_inplane_sem_common_circle.py`
 - `preview_gltf_pyvista.py`
 
 ## 运行示例
@@ -235,6 +248,13 @@ D:\anaconda3\envs\torch\python.exe .\export_up2_ebsd_kikuchi_correspondence.py `
   --output-dir outputs\up2_ebsd_kikuchi_correspondence_E_20251209Pt
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\align_pt1_inplane_sem_common_circle.py `
+  --h5 E:\ZHL\EBSD-RAW\20251209Pt\20251209Pt.edaxh5 `
+  --up2-root E:\ZHL\EBSD-RAW\20251209Pt `
+  --output-dir outputs\pt1_inplane_sem_common_circle_E_20251209Pt
+```
+
 ## 版本改动
 
 ### 2026-06-29
@@ -244,6 +264,7 @@ D:\anaconda3\envs\torch\python.exe .\export_up2_ebsd_kikuchi_correspondence.py `
 - 新增 `export_pt1_sem_kikuchi_pairs.py`，用于读取每个 Pt-1 EBSD map 对应的 SEM，并导出一张同 index 的 raw Kikuchi pattern。
 - 新增 `export_h5_mapping_sem_correspondence.py`，用于导出 H5 中全部 OIM mapping 的 SEM，并和本机/回收站中可找到的 UP2 原始文件名做对应。
 - 新增 `export_up2_ebsd_kikuchi_correspondence.py`，用于逐个 UP2 建立 EBSD mapping 与 Kikuchi 示例对应。
+- 新增 `align_pt1_inplane_sem_common_circle.py`，用于对 Pt-1 四组 in-plane EBSD 的 SEM 做对齐，并计算最大公共圆形 ROI。
 - 分类输出保存在 `outputs/pt1_classification/`，仅用于本地分析，不提交 GitHub。
 - 当前 Pt-1 分类逻辑区分：
   - H5 与 UP2 能一一匹配的可靠分析组。
