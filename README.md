@@ -47,6 +47,24 @@
 - `visualize_scan_position_pc_correction.py` 和 `score_scan_position_pc_correction.py` 用 scan position 估计不同 pattern 在扫描视场中造成的 PC 偏移，并比较不同 PC correction 模型。
 - 注意：`visualize_edax_match_3d.py` 需要当前 Python 环境安装 `pyvista`/VTK；未安装时，其余 2D 投影和诊断脚本仍可正常运行。
 
+### 4.1 单张 Kikuchi 的预处理、球面标定和 PC finetune
+
+- `single_kikuchi_pc_finetune.py` 用于先挑一张 Kikuchi pattern 跑通完整流程。
+- 流程包括：
+  - 读取 H5 中的 EDAX PC、OIM orientation、sample tilt 和 camera geometry。
+  - 从 UP2 读取同 index 的 raw Kikuchi pattern。
+  - 做背景扣除、强度归一化、CLAHE 对比增强和 band-enhanced 图。
+  - 用 EDAX PC 生成 detector-frame spherical patch。
+  - 用 orientation 把 patch 放到 crystal-frame master sphere 上。
+  - 在局部范围内微调 PC，并用实验 pattern 与 master sphere 采样值的相关性作为目标函数。
+- 默认测试样例为 Cu Area 1 HighR 的 `pattern-index=2661`。
+- 默认 PC 搜索范围为 `PCx/PCy ±0.02`、`PCz ±0.04`，先粗网格再细网格。
+- 输出：
+  - `single_kikuchi_pc_finetune_overview.png`
+  - `single_kikuchi_pc_finetune_summary.csv`
+  - `orientation_scores.csv`
+  - `pc_finetune_scores.csv`
+
 ### 5. 固定 PC 的单晶 zone-axis 倾斜和 PC 漂移模拟
 
 - `simulate_111_tilt_kikuchi_patterns.py` 用固定 EDAX PC 模拟指定 zone axis 的单晶 Kikuchi pattern。
@@ -130,6 +148,7 @@
 
 - `project_edax_oim_to_sphere.py`
 - `diagnose_edax_transform_chain.py`
+- `single_kikuchi_pc_finetune.py`
 - `visualize_edax_projection_sets.py`
 - `visualize_edax_match_3d.py`
 - `visualize_scan_position_pc_correction.py`
@@ -166,6 +185,15 @@ D:\anaconda3\envs\torch\python.exe .\diagnose_edax_transform_chain.py `
   --pattern-index 2661 `
   --master D:\anaconda3\envs\torch\Lib\site-packages\kikuchipy\data\emsoft_ebsd_master_pattern\ni_mc_mp_20kv_uint8_gzip_opts9.h5 `
   --output-dir outputs\github_edax_visualizations\diagnose_area1_high_idx2661
+```
+
+```powershell
+D:\anaconda3\envs\torch\python.exe .\single_kikuchi_pc_finetune.py `
+  --h5 D:\project\EBSD2026\ebsd.edaxh5 `
+  --up2 "C:\Users\WHJ\Desktop\kikuchi-super resolution\20260512_Cu_Area 1_OIM Map 1.up2" `
+  --map-group "/20260512/Cu/Area 1/OIM Map 1HighR" `
+  --pattern-index 2661 `
+  --output-dir outputs\single_kikuchi_pc_finetune
 ```
 
 ```powershell
@@ -256,6 +284,17 @@ D:\anaconda3\envs\torch\python.exe .\align_pt1_inplane_sem_common_circle.py `
 ```
 
 ## 版本改动
+
+### 2026-06-30
+
+- 新增 `single_kikuchi_pc_finetune.py`，用于单张 Kikuchi pattern 的端到端验证：图像预处理、EDAX PC 球面标定、orientation 投影到 master sphere、局部 PC finetune 和可视化。
+- 默认样例使用 Cu Area 1 HighR 的 `pattern-index=2661`。
+- 当前 PC finetune 目标函数为实验 pattern 与 master sphere 采样值的相关性，综合 corrected intensity 与 band-enhanced response。
+- 已生成本地输出：
+  - `outputs/single_kikuchi_pc_finetune/single_kikuchi_pc_finetune_overview.png`
+  - `outputs/single_kikuchi_pc_finetune/single_kikuchi_pc_finetune_summary.csv`
+  - `outputs/single_kikuchi_pc_finetune/orientation_scores.csv`
+  - `outputs/single_kikuchi_pc_finetune/pc_finetune_scores.csv`
 
 ### 2026-06-29
 
