@@ -65,6 +65,31 @@
   - `orientation_scores.csv`
   - `pc_finetune_scores.csv`
 
+### 4.2 Pt-3 四组 in-plane EBSD 的同一晶面球形标定
+
+- `pt3_same_face_spherical_calibration.py` 用于处理 Pt-3 的四组 90° in-plane 旋转 EBSD：
+  - `Area 3-360 / OIM Map 1`
+  - `Area 3-90 / OIM Map 1`
+  - `Area 3-180 / OIM Map 1`
+  - `Area 3-270 / OIM Map 1`
+- 先把四张 SEM 按已知 in-plane 角度旋回 `Area 3-360` 坐标系。
+- 在旋回后的 SEM 中定义同一个晶面内部 ROI，并在每个 mapping 的 ROI 内选择 high-IQ/high-CI Kikuchi。
+- 每张 Kikuchi 都强制使用保守圆形 detector mask；默认半径为 `0.40 * min(H, W)`，圆外区域不参与背景扣除、衬度增强、PC scoring 或球面投影。
+- 预处理包括：
+  - 保守圆形 mask；
+  - mask 内强度归一化；
+  - mask-aware Gaussian background removal；
+  - CLAHE contrast enhancement；
+  - band-enhanced response。
+- orientation 处理加入硬先验：非参考 mapping 不再自由选择 orientation，而是从 `Area 3-360` 的参考 orientation 出发，按已知 `-90/-180/-270` in-plane 角度绕同一根球面轴线旋转。
+- 默认 `--inplane-prior-family crystal_post`，即在 crystal/master sphere 中使用同一根轴线施加已知 in-plane 旋转。
+- 默认 PC finetune 范围收紧为 `PCx/PCy ±0.01`、`PCz ±0.02`，避免 PC 过度补偿错误 orientation。
+- 输出：
+  - `pt3_same_face_roi_selection.png`
+  - `pt3_same_face_spherical_calibration_workflow.png`
+  - `pt3_same_face_3d_kikuchi_sphere.png`
+  - `pt3_same_face_spherical_calibration_summary.csv`
+
 ### 5. 固定 PC 的单晶 zone-axis 倾斜和 PC 漂移模拟
 
 - `simulate_111_tilt_kikuchi_patterns.py` 用固定 EDAX PC 模拟指定 zone axis 的单晶 Kikuchi pattern。
@@ -149,6 +174,7 @@
 - `project_edax_oim_to_sphere.py`
 - `diagnose_edax_transform_chain.py`
 - `single_kikuchi_pc_finetune.py`
+- `pt3_same_face_spherical_calibration.py`
 - `visualize_edax_projection_sets.py`
 - `visualize_edax_match_3d.py`
 - `visualize_scan_position_pc_correction.py`
@@ -194,6 +220,14 @@ D:\anaconda3\envs\torch\python.exe .\single_kikuchi_pc_finetune.py `
   --map-group "/20260512/Cu/Area 1/OIM Map 1HighR" `
   --pattern-index 2661 `
   --output-dir outputs\single_kikuchi_pc_finetune
+```
+
+```powershell
+D:\anaconda3\envs\torch\python.exe .\pt3_same_face_spherical_calibration.py `
+  --h5 E:\ZHL\EBSD-RAW\20251209Pt\20251209Pt.edaxh5 `
+  --up2-root E:\ZHL\EBSD-RAW\20251209Pt `
+  --output-dir outputs\pt3_same_face_spherical_calibration `
+  --mask-radius-fraction 0.40
 ```
 
 ```powershell
@@ -295,6 +329,14 @@ D:\anaconda3\envs\torch\python.exe .\align_pt1_inplane_sem_common_circle.py `
   - `outputs/single_kikuchi_pc_finetune/single_kikuchi_pc_finetune_summary.csv`
   - `outputs/single_kikuchi_pc_finetune/orientation_scores.csv`
   - `outputs/single_kikuchi_pc_finetune/pc_finetune_scores.csv`
+- 新增 `pt3_same_face_spherical_calibration.py`，用于 Pt-3 四组 in-plane EBSD 的同一晶面 Kikuchi 球形标定。
+- Pt-3 脚本强制使用保守圆形 Kikuchi mask，并在 mask 内做背景扣除和衬度增强；默认 mask 半径为 `0.40 * min(H, W)`，用于避免边缘缺口进入评分和球面投影。
+- Pt-3 脚本加入全局同轴 in-plane 旋转先验，默认使用 `crystal_post` family，将非参考 mapping 限制为绕同一球面轴线的 `-90/-180/-270` 旋转。
+- 已生成本地输出：
+  - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_roi_selection.png`
+  - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_spherical_calibration_workflow.png`
+  - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_3d_kikuchi_sphere.png`
+  - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_spherical_calibration_summary.csv`
 
 ### 2026-06-29
 

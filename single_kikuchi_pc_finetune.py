@@ -60,6 +60,38 @@ def zscore(values: np.ndarray) -> np.ndarray:
     return (values - values.mean()) / (values.std() + 1e-8)
 
 
+def centered_circular_detector_mask(
+    shape: tuple[int, int],
+    radius_fraction: float = 0.40,
+) -> tuple[np.ndarray, tuple[int, int, int]]:
+    """Return a conservative inner detector disk used for preprocessing/scoring.
+
+    The saved EDAX raster can contain shadowed edge pixels near the phosphor rim.
+    A smaller inner disk keeps every displayed and scored Kikuchi pattern circular.
+    """
+    height, width = shape
+    center_x = (width - 1) / 2.0
+    center_y = (height - 1) / 2.0
+    radius = radius_fraction * min(height, width)
+    yy, xx = np.indices(shape)
+    mask = (xx - center_x) ** 2 + (yy - center_y) ** 2 <= radius**2
+    return mask, (int(round(center_x)), int(round(center_y)), int(round(radius)))
+
+
+def rescale_masked(image: np.ndarray, mask: np.ndarray, low: float = 0.5, high: float = 99.5) -> np.ndarray:
+    output = np.zeros_like(image, dtype=np.float32)
+    values = image[mask & np.isfinite(image)]
+    if values.size == 0:
+        return output
+    lo, hi = np.percentile(values, [low, high])
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo, hi = float(values.min()), float(values.max())
+    if hi <= lo:
+        return output
+    output[mask] = np.clip((image[mask] - lo) / (hi - lo), 0.0, 1.0)
+    return output.astype(np.float32)
+
+
 def detector_directions_with_pc(projection, pc_edax: tuple[float, float, float]) -> np.ndarray:
     detector = EBSDDetector(
         shape=projection.shape,
@@ -78,22 +110,40 @@ def make_stride_indices(mask: np.ndarray, stride: int) -> np.ndarray:
     return np.flatnonzero((mask & stride_mask).ravel()).astype(np.int64)
 
 
-def build_preprocessed_images(pattern: np.ndarray) -> dict[str, np.ndarray]:
-    raw_normalized = exposure.rescale_intensity(
-        pattern.astype(np.float32), in_range="image", out_range=(0.0, 1.0)
-    )
-    corrected = preprocess_pattern(pattern)
-    enhanced = exposure.equalize_adapthist(corrected, clip_limit=0.025).astype(np.float32)
+def build_preprocessed_images(pattern: np.ndarray, mask: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    if mask is None:
+        mask, _circle = centered_circular_detector_mask(pattern.shape)
+    mask = mask.astype(bool)
+
+    raw = pattern.astype(np.float32)
+    raw_normalized = rescale_masked(raw, mask)
+
+    fill_value = float(np.median(raw[mask])) if np.any(mask) else float(np.median(raw))
+    filled = raw.copy()
+    filled[~mask] = fill_value
+    background = filters.gaussian(filled, sigma=18.0, preserve_range=True)
+    corrected_float = filled - background
+    corrected = rescale_masked(corrected_float, mask, low=0.5, high=99.5)
+
+    enhanced = np.zeros_like(corrected, dtype=np.float32)
+    if np.any(mask):
+        enhanced_full = exposure.equalize_adapthist(corrected, clip_limit=0.025).astype(np.float32)
+        enhanced[mask] = enhanced_full[mask]
     band = exposure.rescale_intensity(
-        filters.meijering(corrected, sigmas=range(1, 6), black_ridges=False),
+        filters.meijering(enhanced, sigmas=range(1, 6), black_ridges=False),
         in_range="image",
         out_range=(0.0, 1.0),
     ).astype(np.float32)
+    raw_normalized[~mask] = 0.0
+    corrected[~mask] = 0.0
+    enhanced[~mask] = 0.0
+    band[~mask] = 0.0
     return {
         "raw_normalized": raw_normalized,
         "corrected": corrected.astype(np.float32),
         "enhanced": enhanced,
         "band": band,
+        "mask": mask,
     }
 
 
@@ -144,7 +194,7 @@ def choose_orientation_matrix(
 ) -> tuple[str, np.ndarray, list[dict[str, object]]]:
     indices = make_stride_indices(mask, stride)
     detector_directions = detector_directions_with_pc(projection, projection.pc_edax)
-    exp_corrected = images["corrected"].ravel()[indices]
+    exp_corrected = images.get("enhanced", images["corrected"]).ravel()[indices]
     exp_band = images["band"].ravel()[indices]
 
     rows: list[dict[str, object]] = []
@@ -260,7 +310,7 @@ def pc_finetune(
     band_weight: float,
 ) -> tuple[ScoreResult, list[ScoreResult]]:
     indices = make_stride_indices(mask, stride)
-    exp_corrected = images["corrected"].ravel()[indices]
+    exp_corrected = images.get("enhanced", images["corrected"]).ravel()[indices]
     exp_band = images["band"].ravel()[indices]
     pc0 = projection.pc_edax
 
@@ -481,11 +531,11 @@ def save_visualization(
     axes[0].axis("off")
 
     axes[1].imshow(images["corrected"], cmap="gray", vmin=0, vmax=1)
-    axes[1].set_title("Preprocessed: background-corrected + normalized")
+    axes[1].set_title("Preprocessed: circular mask + background corrected")
     axes[1].axis("off")
 
-    axes[2].imshow(images["band"], cmap="gray", vmin=0, vmax=1)
-    axes[2].set_title("Band-enhanced image used in PC scoring")
+    axes[2].imshow(images["enhanced"], cmap="gray", vmin=0, vmax=1)
+    axes[2].set_title("Contrast-enhanced image used in PC scoring")
     axes[2].axis("off")
 
     imshow_sphere(axes[3], detector_patch[0], detector_patch[1], "Detector-frame spherical patch\nEDAX PC, no orientation")
@@ -581,8 +631,8 @@ def run(args: argparse.Namespace) -> None:
             pattern_index=args.pattern_index,
         )
     )
-    images = build_preprocessed_images(projection.pattern)
-    mask, circle = estimate_circular_detector_mask(projection.pattern)
+    mask, circle = centered_circular_detector_mask(projection.pattern.shape, args.mask_radius_fraction)
+    images = build_preprocessed_images(projection.pattern, mask)
     samplers = build_master_samplers(args.master)
 
     orientation_name, matrix, orientation_rows = choose_orientation_matrix(
@@ -611,9 +661,9 @@ def run(args: argparse.Namespace) -> None:
     original = next(row for row in score_rows if row.stage == "original")
 
     master_texture = build_master_lon_colat(samplers.upper_corrected, samplers.lower_corrected)
-    detector_patch = project_detector_patch(projection, original.pc, images["corrected"], mask)
-    original_patch = project_crystal_patch(projection, original.pc, matrix, images["corrected"], mask)
-    refined_patch = project_crystal_patch(projection, refined.pc, matrix, images["corrected"], mask)
+    detector_patch = project_detector_patch(projection, original.pc, images["enhanced"], mask)
+    original_patch = project_crystal_patch(projection, original.pc, matrix, images["enhanced"], mask)
+    refined_patch = project_crystal_patch(projection, refined.pc, matrix, images["enhanced"], mask)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_orientation_scores(args.output_dir / "orientation_scores.csv", orientation_rows)
@@ -669,6 +719,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fine-steps", type=int, default=7)
     parser.add_argument("--intensity-weight", type=float, default=0.35)
     parser.add_argument("--band-weight", type=float, default=0.65)
+    parser.add_argument(
+        "--mask-radius-fraction",
+        type=float,
+        default=0.40,
+        help="Conservative circular detector mask radius as a fraction of min(pattern height, width).",
+    )
     return parser.parse_args()
 
 
