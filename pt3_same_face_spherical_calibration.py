@@ -4,6 +4,7 @@ import argparse
 import csv
 import math
 from dataclasses import dataclass
+from itertools import permutations, product
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,8 @@ from skimage import exposure
 from project_edax_oim_to_sphere import (
     EdaxMapInputs,
     build_master_lon_colat,
+    orientation_candidates,
+    project_patch_to_lon_colat,
     read_edax_inputs,
 )
 from single_kikuchi_pc_finetune import (
@@ -122,8 +125,13 @@ class ProcessedMap:
     pc_original: tuple[float, float, float]
     pc_refined: tuple[float, float, float]
     pc_delta: tuple[float, float, float]
+    base_orientation_variant: str
+    base_orientation_matrix: np.ndarray
     orientation_variant: str
     orientation_matrix: np.ndarray
+    symmetry_name: str
+    symmetry_matrix: np.ndarray
+    axis_prior_score: float
     original_score: float
     refined_score: float
     score_gain: float
@@ -178,49 +186,77 @@ def scan_to_sem_xy(indices: np.ndarray, nrows: int, ncols: int, sem_shape: tuple
     return x.astype(np.float64), y.astype(np.float64)
 
 
-def row_rotation_z(angle_deg: float) -> np.ndarray:
-    angle = math.radians(angle_deg)
-    c = math.cos(angle)
-    s = math.sin(angle)
-    # Row-vector rotation about +z.
-    return np.array(
-        [
-            [c, s, 0.0],
-            [-s, c, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float64,
-    )
+def orthonormalize_rotation(matrix: np.ndarray) -> np.ndarray:
+    u, _s, vt = np.linalg.svd(matrix.astype(np.float64))
+    rotation = u @ vt
+    if np.linalg.det(rotation) < 0:
+        u[:, -1] *= -1.0
+        rotation = u @ vt
+    return rotation
 
 
-def choose_inplane_prior_matrix(
+def cubic_proper_symmetry_matrices() -> list[tuple[str, np.ndarray]]:
+    axes = ("x", "y", "z")
+    operations: list[tuple[str, np.ndarray]] = []
+    for perm in permutations(range(3)):
+        for signs in product((-1.0, 1.0), repeat=3):
+            matrix = np.zeros((3, 3), dtype=np.float64)
+            name_parts: list[str] = []
+            for row, axis_index in enumerate(perm):
+                matrix[row, axis_index] = signs[row]
+                name_parts.append(("-" if signs[row] < 0 else "+") + axes[axis_index])
+            if np.linalg.det(matrix) > 0.5:
+                operations.append(("".join(name_parts), matrix))
+    operations.sort(key=lambda item: item[0])
+    identity_index = next(i for i, (_name, matrix) in enumerate(operations) if np.allclose(matrix, np.eye(3)))
+    operations.insert(0, operations.pop(identity_index))
+    return operations
+
+
+def rotation_angle_deg(matrix: np.ndarray) -> float:
+    trace = float(np.trace(matrix))
+    cos_angle = np.clip((trace - 1.0) / 2.0, -1.0, 1.0)
+    return math.degrees(math.acos(cos_angle))
+
+
+def rotation_axis(matrix: np.ndarray) -> np.ndarray:
+    angle = math.radians(rotation_angle_deg(matrix))
+    if abs(math.sin(angle)) > 1e-6:
+        axis = np.array(
+            [
+                matrix[2, 1] - matrix[1, 2],
+                matrix[0, 2] - matrix[2, 0],
+                matrix[1, 0] - matrix[0, 1],
+            ],
+            dtype=np.float64,
+        )
+        axis /= 2.0 * math.sin(angle)
+    else:
+        values, vectors = np.linalg.eig(matrix)
+        axis = np.real(vectors[:, int(np.argmin(np.abs(values - 1.0)))])
+    norm = np.linalg.norm(axis)
+    if norm < 1e-12:
+        axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    else:
+        axis = axis / norm
+    return axis.astype(np.float64)
+
+
+def choose_fixed_orientation_matrix(
     projection,
     mask: np.ndarray,
     images: dict[str, np.ndarray],
-    master_samplers,
-    reference_matrix: np.ndarray,
-    rotation_to_reference_deg: float,
+    samplers,
+    variant_name: str,
     args: argparse.Namespace,
 ) -> tuple[str, np.ndarray, list[dict[str, object]]]:
+    candidates = orientation_candidates(projection.orientation_flat)
+    if variant_name not in candidates:
+        raise KeyError(f"Orientation variant {variant_name!r} not present in H5 candidates")
     indices = make_stride_indices(mask, args.stride)
     detector_directions = detector_directions_with_pc(projection, projection.pc_edax)
     exp_corrected = images["enhanced"].ravel()[indices]
     exp_band = images["band"].ravel()[indices]
-
-    angle = rotation_to_reference_deg
-    row_rot = row_rotation_z(angle)
-    all_candidates: dict[str, np.ndarray] = {
-        f"inplane_prior_sample_pre_{angle:+.0f}deg": row_rot @ reference_matrix,
-        f"inplane_prior_sample_pre_inv_{angle:+.0f}deg": row_rot.T @ reference_matrix,
-        f"inplane_prior_crystal_post_{angle:+.0f}deg": reference_matrix @ row_rot,
-        f"inplane_prior_crystal_post_inv_{angle:+.0f}deg": reference_matrix @ row_rot.T,
-    }
-    if args.inplane_prior_family == "auto_per_map":
-        candidates = all_candidates
-    else:
-        wanted = f"inplane_prior_{args.inplane_prior_family}_{angle:+.0f}deg"
-        candidates = {wanted: all_candidates[wanted]}
-
     rows: list[dict[str, object]] = []
     for name, matrix in candidates.items():
         intensity, band, combined = score_with_directions(
@@ -229,7 +265,7 @@ def choose_inplane_prior_matrix(
             indices=indices,
             exp_corrected_values=exp_corrected,
             exp_band_values=exp_band,
-            samplers=master_samplers,
+            samplers=samplers,
             intensity_weight=args.intensity_weight,
             band_weight=args.band_weight,
         )
@@ -239,12 +275,10 @@ def choose_inplane_prior_matrix(
                 "intensity_score": intensity,
                 "band_score": band,
                 "combined_score": combined,
+                "selected": name == variant_name,
             }
         )
-
-    best = max(rows, key=lambda row: float(row["combined_score"]))
-    best_name = str(best["orientation_variant"])
-    return best_name, candidates[best_name], rows
+    return variant_name, candidates[variant_name], rows
 
 
 def select_same_face_high_quality_point(
@@ -323,6 +357,104 @@ def crystal_vectors_for_patch(projection, pc: tuple[float, float, float], matrix
     return vectors.astype(np.float32), values.ravel()[indices].astype(np.float32)
 
 
+def project_vectors_patch(vectors: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    projected, patch_mask, _angles = project_patch_to_lon_colat(vectors, values)
+    return projected, patch_mask
+
+
+def apply_cubic_symmetry_axis_prior(results: list[ProcessedMap]) -> dict[str, Any]:
+    if len(results) != 4:
+        raise ValueError("The cubic symmetry axis prior currently expects four Pt-3 in-plane maps")
+
+    symmetries = cubic_proper_symmetry_matrices()
+    base_matrices = [orthonormalize_rotation(result.base_orientation_matrix) for result in results]
+    final_candidates = [
+        [orthonormalize_rotation(base_matrix @ symmetry_matrix) for _name, symmetry_matrix in symmetries]
+        for base_matrix in base_matrices
+    ]
+
+    best: dict[str, Any] | None = None
+    n_sym = len(symmetries)
+    for s0 in range(n_sym):
+        f0 = final_candidates[0][s0]
+        for s1 in range(n_sym):
+            q90 = f0.T @ final_candidates[1][s1]
+            q90_sq = q90 @ q90
+            q90_cube = q90_sq @ q90
+            angle90 = rotation_angle_deg(q90)
+            for s2 in range(n_sym):
+                q180 = f0.T @ final_candidates[2][s2]
+                closure180 = np.linalg.norm(q180 - q90_sq, ord="fro")
+                angle180 = rotation_angle_deg(q180)
+                for s3 in range(n_sym):
+                    q270 = f0.T @ final_candidates[3][s3]
+                    closure270 = np.linalg.norm(q270 - q90_cube, ord="fro")
+                    angle270 = rotation_angle_deg(q270)
+                    angle_penalty = (
+                        abs(angle90 - 90.0) / 90.0
+                        + abs(angle180 - 180.0) / 180.0
+                        + abs(angle270 - 90.0) / 90.0
+                    )
+                    score = float(closure180 + closure270 + 2.0 * angle_penalty)
+                    if best is None or score < best["score"]:
+                        best = {
+                            "score": score,
+                            "symmetry_indices": (s0, s1, s2, s3),
+                            "closure180": float(closure180),
+                            "closure270": float(closure270),
+                            "angle90_deg": float(angle90),
+                            "angle180_deg": float(angle180),
+                            "angle270_deg": float(angle270),
+                            "q90": q90,
+                        }
+
+    if best is None:
+        raise RuntimeError("No cubic symmetry axis-prior fit was found")
+
+    common_axis = rotation_axis(best["q90"])
+    best["common_axis"] = common_axis
+    for result, symmetry_index in zip(results, best["symmetry_indices"]):
+        symmetry_name, symmetry_matrix = symmetries[int(symmetry_index)]
+        result.original_patch = project_vectors_patch(result.crystal_vectors, result.crystal_values)
+        result.symmetry_name = symmetry_name
+        result.symmetry_matrix = symmetry_matrix
+        result.axis_prior_score = float(best["score"])
+        result.orientation_matrix = result.base_orientation_matrix @ symmetry_matrix
+        result.orientation_variant = f"h5_{result.base_orientation_variant} @ cubic_sym({symmetry_name})"
+        result.crystal_vectors = (result.crystal_vectors @ symmetry_matrix).astype(np.float32)
+        result.refined_patch = project_vectors_patch(result.crystal_vectors, result.crystal_values)
+
+    return best
+
+
+def write_symmetry_axis_summary(path: Path, results: list[ProcessedMap], fit: dict[str, Any]) -> None:
+    rows: list[dict[str, Any]] = []
+    axis = fit["common_axis"]
+    for result, symmetry_index in zip(results, fit["symmetry_indices"]):
+        rows.append(
+            {
+                "label": result.spec.label,
+                "area": result.spec.area,
+                "base_orientation_variant": result.base_orientation_variant,
+                "selected_cubic_symmetry_index": int(symmetry_index),
+                "selected_cubic_symmetry": result.symmetry_name,
+                "axis_prior_score": fit["score"],
+                "closure180": fit["closure180"],
+                "closure270": fit["closure270"],
+                "angle90_deg": fit["angle90_deg"],
+                "angle180_deg": fit["angle180_deg"],
+                "angle270_deg": fit["angle270_deg"],
+                "common_axis_x": axis[0],
+                "common_axis_y": axis[1],
+                "common_axis_z": axis[2],
+            }
+        )
+    with path.open("w", newline="", encoding="utf-8-sig") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def process_one_map(
     spec: Pt3MapSpec,
     h5_path: Path,
@@ -331,7 +463,7 @@ def process_one_map(
     master_samplers,
     output_dir: Path,
     args: argparse.Namespace,
-    reference_matrix: np.ndarray | None = None,
+    fixed_orientation_variant: str | None = None,
 ) -> ProcessedMap:
     with h5py.File(h5_path, "r") as h5:
         selection = select_same_face_high_quality_point(
@@ -351,7 +483,7 @@ def process_one_map(
     )
     mask, _circle = centered_circular_detector_mask(projection.pattern.shape, args.mask_radius_fraction)
     images = build_preprocessed_images(projection.pattern, mask)
-    if reference_matrix is None:
+    if fixed_orientation_variant is None:
         orientation_name, orientation_matrix, orientation_rows = choose_orientation_matrix(
             projection=projection,
             mask=mask,
@@ -361,15 +493,13 @@ def process_one_map(
             intensity_weight=args.intensity_weight,
             band_weight=args.band_weight,
         )
-        orientation_name = f"reference_h5_{orientation_name}"
     else:
-        orientation_name, orientation_matrix, orientation_rows = choose_inplane_prior_matrix(
+        orientation_name, orientation_matrix, orientation_rows = choose_fixed_orientation_matrix(
             projection=projection,
             mask=mask,
             images=images,
-            master_samplers=master_samplers,
-            reference_matrix=reference_matrix,
-            rotation_to_reference_deg=spec.rotation_to_reference_deg,
+            samplers=master_samplers,
+            variant_name=fixed_orientation_variant,
             args=args,
         )
     with (output_dir / f"orientation_scores_{safe_name(spec.area)}.csv").open("w", newline="", encoding="utf-8-sig") as stream:
@@ -418,8 +548,13 @@ def process_one_map(
         pc_original=original.pc,
         pc_refined=refined.pc,
         pc_delta=refined.delta,
-        orientation_variant=orientation_name,
-        orientation_matrix=orientation_matrix,
+        base_orientation_variant=orientation_name,
+        base_orientation_matrix=orientation_matrix,
+        orientation_variant=f"h5_{orientation_name}",
+        orientation_matrix=orientation_matrix.copy(),
+        symmetry_name="identity_before_axis_fit",
+        symmetry_matrix=np.eye(3, dtype=np.float64),
+        axis_prior_score=float("nan"),
         original_score=original.combined_score,
         refined_score=refined.combined_score,
         score_gain=refined.combined_score - original.combined_score,
@@ -459,7 +594,10 @@ def write_summary_csv(path: Path, results: list[ProcessedMap]) -> None:
                 "CI": result.selected_ci,
                 "phase": result.selected_phase,
                 "candidate_count": result.candidate_count,
+                "base_orientation_variant": result.base_orientation_variant,
                 "orientation_variant": result.orientation_variant,
+                "selected_cubic_symmetry": result.symmetry_name,
+                "axis_prior_score": result.axis_prior_score,
                 "pc_original_x": result.pc_original[0],
                 "pc_original_y": result.pc_original[1],
                 "pc_original_z": result.pc_original[2],
@@ -516,7 +654,7 @@ def save_process_overview(path: Path, results: list[ProcessedMap], master_textur
             ax,
             result.original_patch[0],
             result.original_patch[1],
-            f"Crystal/master sphere\noriginal PC score={result.original_score:+.3f}",
+            f"H5 orientation on master\nrefined PC score={result.refined_score:+.3f}",
         )
 
         ax = axes[row, 5]
@@ -525,7 +663,7 @@ def save_process_overview(path: Path, results: list[ProcessedMap], master_textur
             ax,
             result.refined_patch[0],
             result.refined_patch[1],
-            f"Crystal/master sphere\nrefined PC score={result.refined_score:+.3f}",
+            f"Cubic-symmetry equivalent\n{result.symmetry_name}",
         )
 
     fig.suptitle("Pt-3 same physical facet: four Kikuchi spherical calibration workflows", fontsize=15)
@@ -573,8 +711,7 @@ def draw_master_surface(ax, surface_data) -> None:
     ax.plot_surface(x, y, z, facecolors=facecolors, rstride=1, cstride=1, linewidth=0, antialiased=False, shade=False)
 
 
-def draw_inplane_axis(ax, reference_matrix: np.ndarray) -> None:
-    axis = np.array([0.0, 0.0, 1.0], dtype=np.float64) @ reference_matrix
+def draw_inplane_axis(ax, axis: np.ndarray) -> None:
     axis = axis / max(np.linalg.norm(axis), 1e-12)
     points = np.vstack([-axis, axis])
     ax.plot(points[:, 0], points[:, 1], points[:, 2], color="#ff2d55", linewidth=2.2, alpha=0.92)
@@ -603,15 +740,16 @@ def scatter_patch(ax, result: ProcessedMap, alpha: float = 0.35, size: float = 2
     )
 
 
-def save_3d_sphere(path: Path, results: list[ProcessedMap], master_samplers) -> None:
+def save_3d_sphere(path: Path, results: list[ProcessedMap], master_samplers, symmetry_fit: dict[str, Any]) -> None:
     surface_data = master_surface(master_samplers)
     fig = plt.figure(figsize=(18, 10), dpi=170)
+    common_axis = symmetry_fit["common_axis"]
 
     ax = fig.add_subplot(2, 3, 1, projection="3d")
     draw_master_surface(ax, surface_data)
     for result in results:
         scatter_patch(ax, result, alpha=0.34, size=1.7)
-    draw_inplane_axis(ax, results[0].orientation_matrix)
+    draw_inplane_axis(ax, common_axis)
     setup_3d_axis(ax, "Combined refined crystal-frame patches\nsame physical facet, four EBSD mappings")
     ax.legend(loc="lower left", fontsize=7)
 
@@ -619,7 +757,7 @@ def save_3d_sphere(path: Path, results: list[ProcessedMap], master_samplers) -> 
         ax = fig.add_subplot(2, 3, i, projection="3d")
         draw_master_surface(ax, surface_data)
         scatter_patch(ax, result, alpha=0.62, size=2.3, textured=True)
-        draw_inplane_axis(ax, results[0].orientation_matrix)
+        draw_inplane_axis(ax, common_axis)
         setup_3d_axis(
             ax,
             f"{result.spec.area}\nidx={result.selected_index}, refined PC=({result.pc_refined[0]:.3f}, {result.pc_refined[1]:.3f}, {result.pc_refined[2]:.3f})",
@@ -628,19 +766,22 @@ def save_3d_sphere(path: Path, results: list[ProcessedMap], master_samplers) -> 
     ax = fig.add_subplot(2, 3, 6)
     ax.axis("off")
     lines = [
-        "PC finetune summary",
+        "Cubic symmetry axis-prior summary",
+        f"score={symmetry_fit['score']:.5f}",
+        f"angles: 90={symmetry_fit['angle90_deg']:.2f}, 180={symmetry_fit['angle180_deg']:.2f}, 270={symmetry_fit['angle270_deg']:.2f}",
+        f"axis=({common_axis[0]:+.3f}, {common_axis[1]:+.3f}, {common_axis[2]:+.3f})",
         "",
     ]
     for result in results:
         lines.append(
-            f"{result.spec.area}: score {result.original_score:+.3f} -> {result.refined_score:+.3f}, "
-            f"dPC=({result.pc_delta[0]:+.4f}, {result.pc_delta[1]:+.4f}, {result.pc_delta[2]:+.4f})"
+            f"{result.spec.area}: sym={result.symmetry_name}, "
+            f"PC=({result.pc_refined[0]:.3f}, {result.pc_refined[1]:.3f}, {result.pc_refined[2]:.3f})"
         )
     lines.append("")
-    lines.append("Pink line: enforced common in-plane rotation axis")
+    lines.append("Pink line: common axis after cubic-symmetry placement")
     ax.text(0.02, 0.96, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=9)
 
-    fig.suptitle("Pt-3 same-facet Kikuchi patterns projected onto 3D master Kikuchi sphere", fontsize=15)
+    fig.suptitle("Pt-3 H5-orientation Kikuchi patterns placed by cubic symmetry onto one rotation axis", fontsize=15)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
@@ -682,9 +823,12 @@ def run(args: argparse.Namespace) -> None:
         master_samplers=master_samplers,
         output_dir=args.output_dir,
         args=args,
-        reference_matrix=None,
+        fixed_orientation_variant=None,
     )
     results.append(reference_result)
+    fixed_orientation_variant = (
+        reference_result.base_orientation_variant if args.orientation_mode == "reference_variant" else None
+    )
     for spec in MAP_SPECS[1:]:
         results.append(
             process_one_map(
@@ -695,19 +839,28 @@ def run(args: argparse.Namespace) -> None:
                 master_samplers=master_samplers,
                 output_dir=args.output_dir,
                 args=args,
-                reference_matrix=reference_result.orientation_matrix,
+                fixed_orientation_variant=fixed_orientation_variant,
             )
         )
 
+    symmetry_fit = apply_cubic_symmetry_axis_prior(results)
     write_summary_csv(args.output_dir / "pt3_same_face_spherical_calibration_summary.csv", results)
+    write_symmetry_axis_summary(args.output_dir / "pt3_cubic_symmetry_axis_prior_summary.csv", results, symmetry_fit)
     save_sem_selection_preview(args.output_dir / "pt3_same_face_roi_selection.png", results)
     save_process_overview(args.output_dir / "pt3_same_face_spherical_calibration_workflow.png", results, master_texture)
-    save_3d_sphere(args.output_dir / "pt3_same_face_3d_kikuchi_sphere.png", results, master_samplers)
+    save_3d_sphere(args.output_dir / "pt3_same_face_3d_kikuchi_sphere.png", results, master_samplers, symmetry_fit)
 
     print(f"Saved outputs to {args.output_dir}")
+    print(
+        "Cubic symmetry axis prior: "
+        f"score={symmetry_fit['score']:.5f}, "
+        f"angles=({symmetry_fit['angle90_deg']:.2f}, {symmetry_fit['angle180_deg']:.2f}, {symmetry_fit['angle270_deg']:.2f}), "
+        f"axis={tuple(round(float(x), 5) for x in symmetry_fit['common_axis'])}"
+    )
     for result in results:
         print(
             f"{result.spec.area}: idx={result.selected_index}, IQ={result.selected_iq:.1f}, CI={result.selected_ci:.3f}, "
+            f"sym={result.symmetry_name}, "
             f"PC {tuple(round(x, 6) for x in result.pc_original)} -> {tuple(round(x, 6) for x in result.pc_refined)}, "
             f"score {result.original_score:+.4f}->{result.refined_score:+.4f}"
         )
@@ -731,12 +884,13 @@ def parse_args() -> argparse.Namespace:
         help="Conservative circular detector mask radius as a fraction of min(pattern height, width).",
     )
     parser.add_argument(
-        "--inplane-prior-family",
-        choices=("sample_pre", "sample_pre_inv", "crystal_post", "crystal_post_inv", "auto_per_map"),
-        default="crystal_post",
+        "--orientation-mode",
+        choices=("reference_variant", "auto_per_map"),
+        default="reference_variant",
         help=(
-            "How to apply the known in-plane rotation prior. The default uses one global crystal-sphere axis "
-            "rotation family for all non-reference Pt-3 maps. auto_per_map is diagnostic only."
+            "reference_variant uses the best H5 orientation-matrix convention from Area 3-360 for all maps, "
+            "while auto_per_map lets each map choose its own best H5 convention. Neither mode overwrites the "
+            "software orientation with an in-plane prior."
         ),
     )
     parser.add_argument("--coarse-steps", type=int, default=7)

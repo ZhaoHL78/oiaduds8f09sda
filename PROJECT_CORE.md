@@ -14,7 +14,7 @@
 - `project_edax_oim_to_sphere.py`: 当前主线模块，从 EDAX H5/UP2 读取 raw pattern、PC、OIM orientation 和实验几何，并投影到 master sphere。
 - `diagnose_edax_transform_chain.py`: 系统诊断 EDAX PC convention、图像 flip/rotate、sample tilt/camera elevation 和 orientation 矩阵解释。
 - `single_kikuchi_pc_finetune.py`: 单张 Kikuchi pattern 的端到端验证入口，包含图像预处理、EDAX PC 球面标定、orientation 投影到 master sphere、局部 PC finetune 和可视化。
-- `pt3_same_face_spherical_calibration.py`: Pt-3 四组 90° in-plane EBSD 的同一晶面 Kikuchi 球形标定流程，包含 SEM 同晶面 ROI 选点、保守圆形 mask 预处理、PC finetune、全局同轴 in-plane prior 和 3D master sphere 可视化。
+- `pt3_same_face_spherical_calibration.py`: Pt-3 四组 90° in-plane EBSD 的同一晶面 Kikuchi 球形标定流程，包含 SEM 同晶面 ROI 选点、保守圆形 mask 预处理、H5 orientation 单图定位、cubic symmetry 等价落点选择、共同轴线闭包和 3D master sphere 可视化。
 - `visualize_edax_projection_sets.py`: 批量展示多张 pattern 在同一固定链路下投影到 master sphere 的结果。
 - `visualize_edax_match_3d.py`: 用 PyVista 输出标准 Kikuchi sphere 与实验 pattern patch 的 3D 叠加图。
 - `visualize_scan_position_pc_correction.py` / `score_scan_position_pc_correction.py`: 用扫描位置估计 PC 漂移，并对不同 PC correction 模型评分。
@@ -35,7 +35,7 @@
 2. 用 `export_publication_h5_kikuchi_bands.py` 检查 OHP band 是否投影到真实 Kikuchi line 上。
 3. 用 `project_edax_oim_to_sphere.py` 做单张 pattern 的 PC/orientation/master sphere 投影。
 4. 需要把单张 pattern 的“预处理 -> 球面标定 -> PC finetune -> 可视化”先跑通时，跑 `single_kikuchi_pc_finetune.py`。
-5. 对 Pt-3 四组 in-plane EBSD 的同一晶面做批处理时，跑 `pt3_same_face_spherical_calibration.py`，先审查 SEM ROI 和选点，再看四组球形标定过程与 3D master sphere。
+5. 对 Pt-3 四组 in-plane EBSD 的同一晶面做批处理时，跑 `pt3_same_face_spherical_calibration.py`，先审查 SEM ROI 和选点，再看 H5 orientation 落点、cubic symmetry 等价落点和 3D master sphere 上的共同旋转轴。
 6. 对坐标链路有疑问时，先跑 `diagnose_edax_transform_chain.py`，枚举图像方向、tilt 和 orientation matrix convention。
 7. 用 `visualize_edax_projection_sets.py` / `visualize_edax_match_3d.py` 做批量和三维可视化。
 8. 对新的 Pt-1 多角度数据，先跑 `classify_pt1_ebsd_data.py`，只把 H5 与 UP2 精确匹配的组用于后续 Kikuchi pattern、PC、orientation、OHP band 联合分析。

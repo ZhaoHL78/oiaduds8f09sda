@@ -81,14 +81,16 @@
   - mask-aware Gaussian background removal；
   - CLAHE contrast enhancement；
   - band-enhanced response。
-- orientation 处理加入硬先验：非参考 mapping 不再自由选择 orientation，而是从 `Area 3-360` 的参考 orientation 出发，按已知 `-90/-180/-270` in-plane 角度绕同一根球面轴线旋转。
-- 默认 `--inplane-prior-family crystal_post`，即在 crystal/master sphere 中使用同一根轴线施加已知 in-plane 旋转。
-- 默认 PC finetune 范围收紧为 `PCx/PCy ±0.01`、`PCz ±0.02`，避免 PC 过度补偿错误 orientation。
+- orientation 处理不再直接覆盖软件给出的 orientation。流程先用每张 Kikuchi 自己的 H5 orientation 把 pattern 放到 crystal/master sphere 上。
+- 然后利用 cubic master sphere 的 24 个 proper symmetry，在对称等价位置中选择最终落点，使四张 pattern 满足共同轴线闭包：`Q180 ~= Q90^2`、`Q270 ~= Q90^3`。
+- 默认 `--orientation-mode reference_variant`，只用参考图确定一次 EDAX H5 orientation matrix convention，其余图仍使用各自 H5 orientation 数值。
+- 默认 PC finetune 范围收紧为 `PCx/PCy ±0.01`、`PCz ±0.02`，只做单张 pattern 的小范围几何细调。
 - 输出：
   - `pt3_same_face_roi_selection.png`
   - `pt3_same_face_spherical_calibration_workflow.png`
   - `pt3_same_face_3d_kikuchi_sphere.png`
   - `pt3_same_face_spherical_calibration_summary.csv`
+  - `pt3_cubic_symmetry_axis_prior_summary.csv`
 
 ### 5. 固定 PC 的单晶 zone-axis 倾斜和 PC 漂移模拟
 
@@ -227,7 +229,8 @@ D:\anaconda3\envs\torch\python.exe .\pt3_same_face_spherical_calibration.py `
   --h5 E:\ZHL\EBSD-RAW\20251209Pt\20251209Pt.edaxh5 `
   --up2-root E:\ZHL\EBSD-RAW\20251209Pt `
   --output-dir outputs\pt3_same_face_spherical_calibration `
-  --mask-radius-fraction 0.40
+  --mask-radius-fraction 0.40 `
+  --orientation-mode reference_variant
 ```
 
 ```powershell
@@ -331,12 +334,13 @@ D:\anaconda3\envs\torch\python.exe .\align_pt1_inplane_sem_common_circle.py `
   - `outputs/single_kikuchi_pc_finetune/pc_finetune_scores.csv`
 - 新增 `pt3_same_face_spherical_calibration.py`，用于 Pt-3 四组 in-plane EBSD 的同一晶面 Kikuchi 球形标定。
 - Pt-3 脚本强制使用保守圆形 Kikuchi mask，并在 mask 内做背景扣除和衬度增强；默认 mask 半径为 `0.40 * min(H, W)`，用于避免边缘缺口进入评分和球面投影。
-- Pt-3 脚本加入全局同轴 in-plane 旋转先验，默认使用 `crystal_post` family，将非参考 mapping 限制为绕同一球面轴线的 `-90/-180/-270` 旋转。
+- Pt-3 脚本不再直接调整/覆盖 orientation；现在先用每张 H5 orientation 定位，再用 cubic symmetry 选择等价 master-sphere 落点，使四张 pattern 尽量满足同一球面轴线的旋转闭包。
 - 已生成本地输出：
   - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_roi_selection.png`
   - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_spherical_calibration_workflow.png`
   - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_3d_kikuchi_sphere.png`
   - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_spherical_calibration_summary.csv`
+  - `outputs/pt3_same_face_spherical_calibration/pt3_cubic_symmetry_axis_prior_summary.csv`
 
 ### 2026-06-29
 
