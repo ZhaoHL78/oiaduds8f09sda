@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import to_rgb
 from matplotlib.path import Path as MplPath
-from skimage import exposure
+from skimage import exposure, filters
 
 from project_edax_oim_to_sphere import (
     EdaxMapInputs,
@@ -22,6 +22,7 @@ from project_edax_oim_to_sphere import (
     orientation_candidates,
     project_patch_to_lon_colat,
     read_edax_inputs,
+    sample_master,
 )
 from single_kikuchi_pc_finetune import (
     build_master_samplers,
@@ -717,6 +718,283 @@ def draw_inplane_axis(ax, axis: np.ndarray) -> None:
     ax.plot(points[:, 0], points[:, 1], points[:, 2], color="#ff2d55", linewidth=2.2, alpha=0.92)
 
 
+def normalize_values(values: np.ndarray, mask: np.ndarray | None = None, low: float = 1.0, high: float = 99.0) -> np.ndarray:
+    output = np.zeros_like(values, dtype=np.float32)
+    valid = np.isfinite(values)
+    if mask is not None:
+        valid &= mask
+    selected = values[valid]
+    if selected.size == 0:
+        return output
+    lo, hi = np.percentile(selected, [low, high])
+    if hi <= lo:
+        lo, hi = float(selected.min()), float(selected.max())
+    if hi <= lo:
+        return output
+    output[valid] = np.clip((values[valid] - lo) / (hi - lo), 0.0, 1.0)
+    return output
+
+
+def smooth_masked_values(values: np.ndarray, mask: np.ndarray, sigma: float = 0.75) -> np.ndarray:
+    if sigma <= 0:
+        return values.astype(np.float32)
+    values_f = values.astype(np.float32)
+    mask_f = mask.astype(np.float32)
+    blurred_values = filters.gaussian(values_f * mask_f, sigma=sigma, preserve_range=True)
+    blurred_mask = filters.gaussian(mask_f, sigma=sigma, preserve_range=True)
+    output = np.zeros_like(values_f, dtype=np.float32)
+    valid = blurred_mask > 1e-4
+    output[valid] = blurred_values[valid] / blurred_mask[valid]
+    output[~mask] = 0.0
+    return output
+
+
+def patch_center_vector(result: ProcessedMap) -> np.ndarray:
+    center = np.mean(result.crystal_vectors.astype(np.float64), axis=0)
+    norm = np.linalg.norm(center)
+    if norm < 1e-12:
+        center = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    else:
+        center = center / norm
+    return center
+
+
+def camera_basis(center: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    forward = center / max(np.linalg.norm(center), 1e-12)
+    up_guess = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    if abs(float(np.dot(forward, up_guess))) > 0.92:
+        up_guess = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    right = np.cross(up_guess, forward)
+    right /= max(np.linalg.norm(right), 1e-12)
+    up = np.cross(forward, right)
+    up /= max(np.linalg.norm(up), 1e-12)
+    return right, up, forward
+
+
+def front_sphere_master_image(master_samplers, center: np.ndarray, size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    right, up, forward = camera_basis(center)
+    grid = np.linspace(-1.0, 1.0, size, dtype=np.float64)
+    x_grid, y_grid = np.meshgrid(grid, grid)
+    disk = x_grid**2 + y_grid**2 <= 1.0
+    z_grid = np.zeros_like(x_grid)
+    z_grid[disk] = np.sqrt(np.clip(1.0 - x_grid[disk] ** 2 - y_grid[disk] ** 2, 0.0, 1.0))
+    vectors = (
+        x_grid[disk, None] * right[None, :]
+        + y_grid[disk, None] * up[None, :]
+        + z_grid[disk, None] * forward[None, :]
+    )
+    master = np.ones((size, size), dtype=np.float32)
+    sampled = sample_master(vectors, master_samplers.upper_corrected, master_samplers.lower_corrected)
+    sampled = normalize_values(sampled.reshape(-1), low=0.5, high=99.5)
+    master[disk] = sampled
+    shade = np.ones_like(master, dtype=np.float32)
+    shade[disk] = (0.62 + 0.38 * z_grid[disk]).astype(np.float32)
+    master = np.clip(master * shade, 0.0, 1.0)
+    image = np.ones((size, size, 4), dtype=np.float32)
+    image[..., :3] = 1.0
+    image[..., 3] = 0.0
+    image[disk, :3] = np.repeat(master[disk, None], 3, axis=1)
+    image[disk, 3] = 1.0
+    return image, disk, z_grid.astype(np.float32), (right, up, forward)
+
+
+def rasterize_patch_front_view(
+    result: ProcessedMap,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+    size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    right, up, forward = basis
+    vectors = result.crystal_vectors.astype(np.float64)
+    values = result.crystal_values.astype(np.float32)
+    cam_x = vectors @ right
+    cam_y = vectors @ up
+    cam_z = vectors @ forward
+    visible = cam_z > 0.0
+    px = np.rint((cam_x[visible] + 1.0) * 0.5 * (size - 1)).astype(np.int64)
+    py = np.rint((1.0 - (cam_y[visible] + 1.0) * 0.5) * (size - 1)).astype(np.int64)
+    inside = (px >= 0) & (px < size) & (py >= 0) & (py < size)
+    px = px[inside]
+    py = py[inside]
+    vals = values[visible][inside]
+
+    patch_sum = np.zeros((size, size), dtype=np.float32)
+    patch_count = np.zeros((size, size), dtype=np.float32)
+    np.add.at(patch_sum, (py, px), vals)
+    np.add.at(patch_count, (py, px), 1.0)
+    patch_mask = patch_count > 0
+    patch = np.zeros_like(patch_sum)
+    patch[patch_mask] = patch_sum[patch_mask] / patch_count[patch_mask]
+    patch = normalize_values(patch, patch_mask, low=0.8, high=99.2)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    filled = patch.copy()
+    filled_mask = patch_mask.copy()
+    for _ in range(2):
+        dilated_values = cv2.dilate(filled, kernel)
+        dilated_mask = cv2.dilate(filled_mask.astype(np.uint8), kernel).astype(bool)
+        new_pixels = dilated_mask & ~filled_mask
+        filled[new_pixels] = dilated_values[new_pixels]
+        filled_mask = dilated_mask
+    return filled, filled_mask
+
+
+def render_front_sphere_view(
+    result: ProcessedMap,
+    master_samplers,
+    size: int = 1500,
+) -> np.ndarray:
+    center = patch_center_vector(result)
+    image, disk, z_grid, basis = front_sphere_master_image(master_samplers, center, size)
+    patch, patch_mask = rasterize_patch_front_view(result, basis, size)
+    patch_mask &= disk
+    shade = 0.70 + 0.30 * z_grid
+    patch_rgb = np.repeat(np.clip(patch * shade, 0.0, 1.0)[..., None], 3, axis=2)
+    alpha = np.where(patch_mask, 0.94, 0.0).astype(np.float32)
+    image[..., :3] = image[..., :3] * (1.0 - alpha[..., None]) + patch_rgb * alpha[..., None]
+    edge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    edge = cv2.dilate(patch_mask.astype(np.uint8), edge_kernel).astype(bool) & ~cv2.erode(
+        patch_mask.astype(np.uint8), edge_kernel
+    ).astype(bool)
+    color = np.array(to_rgb(result.spec.color), dtype=np.float32)
+    image[edge, :3] = color
+    image[edge, 3] = 1.0
+    sphere_edge = cv2.dilate(disk.astype(np.uint8), edge_kernel).astype(bool) & ~cv2.erode(
+        disk.astype(np.uint8), edge_kernel
+    ).astype(bool)
+    image[sphere_edge, :3] = 0.08
+    image[sphere_edge, 3] = 1.0
+    return np.clip(image, 0.0, 1.0)
+
+
+def render_front_pattern_only(result: ProcessedMap, size: int = 1300) -> np.ndarray:
+    center = patch_center_vector(result)
+    grid = np.linspace(-1.0, 1.0, size, dtype=np.float64)
+    x_grid, y_grid = np.meshgrid(grid, grid)
+    disk = x_grid**2 + y_grid**2 <= 1.0
+    z_grid = np.zeros_like(x_grid, dtype=np.float32)
+    z_grid[disk] = np.sqrt(np.clip(1.0 - x_grid[disk] ** 2 - y_grid[disk] ** 2, 0.0, 1.0)).astype(np.float32)
+    basis = camera_basis(center)
+    patch, patch_mask = rasterize_patch_front_view(result, basis, size)
+    patch_mask &= disk
+
+    image = np.ones((size, size, 4), dtype=np.float32)
+    image[..., :3] = 1.0
+    image[..., 3] = 0.0
+    sphere_shade = 0.88 + 0.10 * z_grid
+    image[disk, :3] = np.repeat(sphere_shade[disk, None], 3, axis=1)
+    image[disk, 3] = 1.0
+
+    shade = 0.76 + 0.24 * z_grid
+    patch_rgb = np.repeat(np.clip(patch * shade, 0.0, 1.0)[..., None], 3, axis=2)
+    image[patch_mask, :3] = patch_rgb[patch_mask]
+    image[patch_mask, 3] = 1.0
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    edge = cv2.dilate(patch_mask.astype(np.uint8), kernel).astype(bool) & ~cv2.erode(
+        patch_mask.astype(np.uint8), kernel
+    ).astype(bool)
+    image[edge, :3] = np.array(to_rgb(result.spec.color), dtype=np.float32)
+    image[edge, 3] = 1.0
+    sphere_edge = cv2.dilate(disk.astype(np.uint8), kernel).astype(bool) & ~cv2.erode(
+        disk.astype(np.uint8), kernel
+    ).astype(bool)
+    image[sphere_edge, :3] = 0.12
+    image[sphere_edge, 3] = 1.0
+    return np.clip(image, 0.0, 1.0)
+
+
+def save_clear_spherical_maps(path: Path, results: list[ProcessedMap], master_texture: np.ndarray) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(12.5, 12.5), dpi=230)
+    axes_flat = axes.ravel()
+    for ax, result in zip(axes_flat, results):
+        image = render_front_pattern_only(result, size=1300)
+        ax.imshow(image)
+        ax.set_title(f"{result.spec.area} sphere-corrected Kikuchi pattern\nsym={result.symmetry_name}, score={result.refined_score:+.3f}")
+        ax.axis("off")
+    fig.suptitle("Clear sphere-corrected Kikuchi patterns, front-facing in crystal/master-sphere coordinates", fontsize=15)
+    fig.tight_layout(rect=[0, 0, 1, 0.955])
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_clear_front_sphere_views(path: Path, results: list[ProcessedMap], master_samplers, output_dir: Path) -> None:
+    master_display = normalize_values(
+        build_master_lon_colat(master_samplers.upper_corrected, master_samplers.lower_corrected),
+        low=0.5,
+        high=99.5,
+    )
+    lon = np.linspace(-np.pi, np.pi, master_display.shape[1])
+    colat = np.linspace(0.0, np.pi, master_display.shape[0])
+    lon_grid, colat_grid = np.meshgrid(lon, colat)
+    x = np.sin(colat_grid) * np.cos(lon_grid)
+    y = np.sin(colat_grid) * np.sin(lon_grid)
+    z = np.cos(colat_grid)
+    def facecolors_for_result(result: ProcessedMap) -> np.ndarray:
+        patch = normalize_values(result.refined_patch[0], result.refined_patch[1], low=0.8, high=99.2)
+        patch = smooth_masked_values(patch, result.refined_patch[1], sigma=0.65)
+        base = np.repeat(master_display[..., None], 3, axis=2)
+        base = 0.56 * base + 0.12
+        patch_rgb = np.repeat(patch[..., None], 3, axis=2)
+        mask = result.refined_patch[1]
+        base[mask] = 0.88 * patch_rgb[mask] + 0.06
+        rgba = np.ones((*base.shape[:2], 4), dtype=np.float32)
+        rgba[..., :3] = np.clip(base, 0.0, 1.0)
+        rgba[..., 3] = 1.0
+        return rgba
+
+    fig = plt.figure(figsize=(14, 14), dpi=220)
+    for index, result in enumerate(results, start=1):
+        ax = fig.add_subplot(2, 2, index, projection="3d")
+        colors = facecolors_for_result(result)
+        stride = 1
+        ax.plot_surface(
+            x[::stride, ::stride],
+            y[::stride, ::stride],
+            z[::stride, ::stride],
+            facecolors=colors[::stride, ::stride],
+            rstride=1,
+            cstride=1,
+            linewidth=0,
+            antialiased=False,
+            shade=False,
+        )
+        center = patch_center_vector(result)
+        elev = math.degrees(math.asin(float(np.clip(center[2], -1.0, 1.0))))
+        azim = math.degrees(math.atan2(float(center[1]), float(center[0])))
+        setup_3d_axis(
+            ax,
+            f"{result.spec.area}: true 3D surface texture, view normal to patch\nsym={result.symmetry_name}",
+        )
+        ax.view_init(elev=elev, azim=azim)
+        ax.set_proj_type("ortho")
+
+        individual_path = output_dir / f"pt3_front_view_{safe_name(result.spec.area)}.png"
+        one_fig = plt.figure(figsize=(8, 8), dpi=240)
+        one_ax = one_fig.add_subplot(1, 1, 1, projection="3d")
+        one_ax.plot_surface(
+            x[::stride, ::stride],
+            y[::stride, ::stride],
+            z[::stride, ::stride],
+            facecolors=colors[::stride, ::stride],
+            rstride=1,
+            cstride=1,
+            linewidth=0,
+            antialiased=False,
+            shade=False,
+        )
+        setup_3d_axis(one_ax, f"{result.spec.area}: pattern attached at final master-sphere position")
+        one_ax.view_init(elev=elev, azim=azim)
+        one_ax.set_proj_type("ortho")
+        one_fig.tight_layout()
+        one_fig.savefig(individual_path, bbox_inches="tight", transparent=True)
+        plt.close(one_fig)
+
+    fig.suptitle("Final true 3D Kikuchi sphere: pattern texture attached at the cubic-symmetry-selected master-sphere position", fontsize=15)
+    fig.tight_layout(rect=[0, 0, 1, 0.955])
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
 def scatter_patch(ax, result: ProcessedMap, alpha: float = 0.35, size: float = 2.0, textured: bool = False) -> None:
     vectors = result.crystal_vectors
     if textured:
@@ -849,6 +1127,8 @@ def run(args: argparse.Namespace) -> None:
     save_sem_selection_preview(args.output_dir / "pt3_same_face_roi_selection.png", results)
     save_process_overview(args.output_dir / "pt3_same_face_spherical_calibration_workflow.png", results, master_texture)
     save_3d_sphere(args.output_dir / "pt3_same_face_3d_kikuchi_sphere.png", results, master_samplers, symmetry_fit)
+    save_clear_spherical_maps(args.output_dir / "pt3_clear_final_spherical_kikuchi_maps.png", results, master_texture)
+    save_clear_front_sphere_views(args.output_dir / "pt3_clear_3d_front_facing_kikuchi_spheres.png", results, master_samplers, args.output_dir)
 
     print(f"Saved outputs to {args.output_dir}")
     print(
@@ -897,7 +1177,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fine-steps", type=int, default=7)
     parser.add_argument("--intensity-weight", type=float, default=0.35)
     parser.add_argument("--band-weight", type=float, default=0.65)
-    parser.add_argument("--max-3d-points-per-pattern", type=int, default=18000)
+    parser.add_argument("--max-3d-points-per-pattern", type=int, default=200000)
     return parser.parse_args()
 
 

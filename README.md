@@ -89,6 +89,9 @@
   - `pt3_same_face_roi_selection.png`
   - `pt3_same_face_spherical_calibration_workflow.png`
   - `pt3_same_face_3d_kikuchi_sphere.png`
+  - `pt3_clear_final_spherical_kikuchi_maps.png`
+  - `pt3_clear_3d_front_facing_kikuchi_spheres.png`
+  - `pt3_front_view_Area_3-360.png` / `pt3_front_view_Area_3-90.png` / `pt3_front_view_Area_3-180.png` / `pt3_front_view_Area_3-270.png`
   - `pt3_same_face_spherical_calibration_summary.csv`
   - `pt3_cubic_symmetry_axis_prior_summary.csv`
 
@@ -339,6 +342,8 @@ D:\anaconda3\envs\torch\python.exe .\align_pt1_inplane_sem_common_circle.py `
   - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_roi_selection.png`
   - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_spherical_calibration_workflow.png`
   - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_3d_kikuchi_sphere.png`
+  - `outputs/pt3_same_face_spherical_calibration/pt3_clear_final_spherical_kikuchi_maps.png`
+  - `outputs/pt3_same_face_spherical_calibration/pt3_clear_3d_front_facing_kikuchi_spheres.png`
   - `outputs/pt3_same_face_spherical_calibration/pt3_same_face_spherical_calibration_summary.csv`
   - `outputs/pt3_same_face_spherical_calibration/pt3_cubic_symmetry_axis_prior_summary.csv`
 
