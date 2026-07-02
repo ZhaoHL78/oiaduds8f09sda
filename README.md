@@ -85,10 +85,15 @@
 - 然后利用 cubic master sphere 的 24 个 proper symmetry，在对称等价位置中选择最终落点，使四张 pattern 满足共同轴线闭包：`Q180 ~= Q90^2`、`Q270 ~= Q90^3`。
 - 默认 `--orientation-mode reference_variant`，只用参考图确定一次 EDAX H5 orientation matrix convention，其余图仍使用各自 H5 orientation 数值。
 - 默认 PC finetune 范围收紧为 `PCx/PCy ±0.01`、`PCz ±0.02`，只做单张 pattern 的小范围几何细调。
+- 同时记录每张 Kikuchi 上 H5/EDAX 原始 PC 和 refined PC 的像素位置，并把这个 PC 方向通过同一条 orientation + cubic symmetry 落点链投到同一个 master sphere 上，用于判断四张 pattern 的晶体学锚点是否满足共同轴线关系。
 - 输出：
   - `pt3_same_face_roi_selection.png`
   - `pt3_same_face_spherical_calibration_workflow.png`
   - `pt3_same_face_3d_kikuchi_sphere.png`
+  - `pt3_pc_positions_on_patterns.png`
+  - `pt3_pc_positions_on_same_sphere.png`
+  - `pt3_pc_positions_same_sphere_axis_view.png`
+  - `pt3_pc_positions_on_same_sphere_lon_colat.png`
   - `pt3_clear_final_spherical_kikuchi_maps.png`
   - `pt3_clear_3d_front_facing_kikuchi_spheres.png`
   - `pt3_same_sphere_axis_aligned_kikuchi_patterns.png`
@@ -328,6 +333,19 @@ D:\anaconda3\envs\torch\python.exe .\align_pt1_inplane_sem_common_circle.py `
 ```
 
 ## 版本改动
+
+### 2026-07-02
+
+- 更新 `pt3_same_face_spherical_calibration.py`，在 Pt-3 四组同晶面 Kikuchi 流程中显式标注每张 pattern 的 PC 位置。
+- 新增两类 PC 可视化：
+  - 在 raw/preprocessed Kikuchi pattern 上同时画出 H5/EDAX PC 和 refined PC。
+  - 把 PC 点投影到 cubic-symmetry-corrected 的同一个 master sphere 上，和四张 Kikuchi patch 的最终落点一起显示。
+- `pt3_same_face_spherical_calibration_summary.csv` 新增 PC 像素坐标和 PC 球面方向列，方便判断 PC 漂移是否对应四组 in-plane mapping 的晶体学锚点变化。
+- 已生成本地输出：
+  - `outputs/pt3_same_face_spherical_calibration/pt3_pc_positions_on_patterns.png`
+  - `outputs/pt3_same_face_spherical_calibration/pt3_pc_positions_on_same_sphere.png`
+  - `outputs/pt3_same_face_spherical_calibration/pt3_pc_positions_same_sphere_axis_view.png`
+  - `outputs/pt3_same_face_spherical_calibration/pt3_pc_positions_on_same_sphere_lon_colat.png`
 
 ### 2026-06-30
 

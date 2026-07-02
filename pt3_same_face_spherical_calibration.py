@@ -126,6 +126,10 @@ class ProcessedMap:
     pc_original: tuple[float, float, float]
     pc_refined: tuple[float, float, float]
     pc_delta: tuple[float, float, float]
+    pc_original_xy: tuple[float, float]
+    pc_refined_xy: tuple[float, float]
+    pc_original_crystal_vector: np.ndarray
+    pc_refined_crystal_vector: np.ndarray
     base_orientation_variant: str
     base_orientation_matrix: np.ndarray
     orientation_variant: str
@@ -358,6 +362,43 @@ def crystal_vectors_for_patch(projection, pc: tuple[float, float, float], matrix
     return vectors.astype(np.float32), values.ravel()[indices].astype(np.float32)
 
 
+def pc_pixel_xy(pc: tuple[float, float, float], shape: tuple[int, int]) -> tuple[float, float]:
+    height, width = shape
+    return (float(pc[0]) * width - 0.5, float(pc[1]) * height - 0.5)
+
+
+def bilinear_direction_at_xy(directions: np.ndarray, xy: tuple[float, float], shape: tuple[int, int]) -> np.ndarray:
+    height, width = shape
+    field = directions.reshape(height, width, 3)
+    x, y = xy
+    x = float(np.clip(x, 0.0, width - 1.0))
+    y = float(np.clip(y, 0.0, height - 1.0))
+    x0 = int(np.floor(x))
+    y0 = int(np.floor(y))
+    x1 = min(x0 + 1, width - 1)
+    y1 = min(y0 + 1, height - 1)
+    tx = x - x0
+    ty = y - y0
+    direction = (
+        (1.0 - tx) * (1.0 - ty) * field[y0, x0]
+        + tx * (1.0 - ty) * field[y0, x1]
+        + (1.0 - tx) * ty * field[y1, x0]
+        + tx * ty * field[y1, x1]
+    )
+    direction = direction.astype(np.float64)
+    direction /= max(np.linalg.norm(direction), 1e-12)
+    return direction
+
+
+def pc_crystal_vector(projection, pc: tuple[float, float, float], matrix: np.ndarray) -> tuple[tuple[float, float], np.ndarray]:
+    xy = pc_pixel_xy(pc, projection.shape)
+    detector_directions = detector_directions_with_pc(projection, pc)
+    detector_direction = bilinear_direction_at_xy(detector_directions, xy, projection.shape)
+    crystal_vector = detector_direction @ matrix
+    crystal_vector = crystal_vector / max(np.linalg.norm(crystal_vector), 1e-12)
+    return xy, crystal_vector.astype(np.float32)
+
+
 def project_vectors_patch(vectors: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     projected, patch_mask, _angles = project_patch_to_lon_colat(vectors, values)
     return projected, patch_mask
@@ -423,6 +464,10 @@ def apply_cubic_symmetry_axis_prior(results: list[ProcessedMap]) -> dict[str, An
         result.orientation_matrix = result.base_orientation_matrix @ symmetry_matrix
         result.orientation_variant = f"h5_{result.base_orientation_variant} @ cubic_sym({symmetry_name})"
         result.crystal_vectors = (result.crystal_vectors @ symmetry_matrix).astype(np.float32)
+        result.pc_original_crystal_vector = (result.pc_original_crystal_vector @ symmetry_matrix).astype(np.float32)
+        result.pc_original_crystal_vector /= max(np.linalg.norm(result.pc_original_crystal_vector), 1e-12)
+        result.pc_refined_crystal_vector = (result.pc_refined_crystal_vector @ symmetry_matrix).astype(np.float32)
+        result.pc_refined_crystal_vector /= max(np.linalg.norm(result.pc_refined_crystal_vector), 1e-12)
         result.refined_patch = project_vectors_patch(result.crystal_vectors, result.crystal_values)
 
     return best
@@ -526,6 +571,8 @@ def process_one_map(
     detector_patch = project_detector_patch(projection, original.pc, images["enhanced"], mask)
     original_patch = project_crystal_patch(projection, original.pc, orientation_matrix, images["enhanced"], mask)
     refined_patch = project_crystal_patch(projection, refined.pc, orientation_matrix, images["enhanced"], mask)
+    pc_original_xy, pc_original_vector = pc_crystal_vector(projection, original.pc, orientation_matrix)
+    pc_refined_xy, pc_refined_vector = pc_crystal_vector(projection, refined.pc, orientation_matrix)
     vectors, values = crystal_vectors_for_patch(
         projection=projection,
         pc=refined.pc,
@@ -549,6 +596,10 @@ def process_one_map(
         pc_original=original.pc,
         pc_refined=refined.pc,
         pc_delta=refined.delta,
+        pc_original_xy=pc_original_xy,
+        pc_refined_xy=pc_refined_xy,
+        pc_original_crystal_vector=pc_original_vector,
+        pc_refined_crystal_vector=pc_refined_vector,
         base_orientation_variant=orientation_name,
         base_orientation_matrix=orientation_matrix,
         orientation_variant=f"h5_{orientation_name}",
@@ -605,6 +656,16 @@ def write_summary_csv(path: Path, results: list[ProcessedMap]) -> None:
                 "pc_refined_x": result.pc_refined[0],
                 "pc_refined_y": result.pc_refined[1],
                 "pc_refined_z": result.pc_refined[2],
+                "pc_original_pixel_x": result.pc_original_xy[0],
+                "pc_original_pixel_y": result.pc_original_xy[1],
+                "pc_refined_pixel_x": result.pc_refined_xy[0],
+                "pc_refined_pixel_y": result.pc_refined_xy[1],
+                "pc_original_sphere_x": result.pc_original_crystal_vector[0],
+                "pc_original_sphere_y": result.pc_original_crystal_vector[1],
+                "pc_original_sphere_z": result.pc_original_crystal_vector[2],
+                "pc_refined_sphere_x": result.pc_refined_crystal_vector[0],
+                "pc_refined_sphere_y": result.pc_refined_crystal_vector[1],
+                "pc_refined_sphere_z": result.pc_refined_crystal_vector[2],
                 "delta_pcx": result.pc_delta[0],
                 "delta_pcy": result.pc_delta[1],
                 "delta_pcz": result.pc_delta[2],
@@ -913,6 +974,201 @@ def save_clear_spherical_maps(path: Path, results: list[ProcessedMap], master_te
         ax.axis("off")
     fig.suptitle("Clear sphere-corrected Kikuchi patterns, front-facing in crystal/master-sphere coordinates", fontsize=15)
     fig.tight_layout(rect=[0, 0, 1, 0.955])
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def draw_pc_marker_on_pattern(ax, result: ProcessedMap) -> None:
+    ax.scatter(
+        [result.pc_original_xy[0]],
+        [result.pc_original_xy[1]],
+        marker="+",
+        s=190,
+        c="white",
+        linewidths=2.3,
+        label="H5/EDAX PC",
+    )
+    ax.scatter(
+        [result.pc_refined_xy[0]],
+        [result.pc_refined_xy[1]],
+        marker="o",
+        s=92,
+        facecolors="none",
+        edgecolors=result.spec.color,
+        linewidths=2.2,
+        label="refined PC",
+    )
+
+
+def save_pc_positions_on_patterns(path: Path, results: list[ProcessedMap]) -> None:
+    fig, axes = plt.subplots(2, len(results), figsize=(16, 7.6), dpi=220)
+    for index, result in enumerate(results):
+        ax = axes[0, index]
+        ax.imshow(masked_image(result.raw_pattern_display, result.detector_mask), cmap="gray", vmin=0, vmax=1)
+        draw_pc_marker_on_pattern(ax, result)
+        ax.set_title(
+            f"{result.spec.area} raw Kikuchi\n"
+            f"H5 PC=({result.pc_original[0]:.4f},{result.pc_original[1]:.4f},{result.pc_original[2]:.4f})"
+        )
+        ax.axis("off")
+
+        ax = axes[1, index]
+        ax.imshow(masked_image(result.enhanced_pattern, result.detector_mask), cmap="gray", vmin=0, vmax=1)
+        draw_pc_marker_on_pattern(ax, result)
+        ax.set_title(
+            f"preprocessed + PC markers\n"
+            f"refined=({result.pc_refined[0]:.4f},{result.pc_refined[1]:.4f},{result.pc_refined[2]:.4f})"
+        )
+        ax.axis("off")
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=2, frameon=False)
+    fig.suptitle("Pattern-center positions on each Kikuchi pattern", fontsize=15)
+    fig.tight_layout(rect=[0, 0.055, 1, 0.94])
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def scatter_pc_markers_on_sphere(ax, results: list[ProcessedMap], radius: float = 1.055) -> None:
+    for index, result in enumerate(results, start=1):
+        vector = result.pc_refined_crystal_vector.astype(np.float64)
+        vector /= max(np.linalg.norm(vector), 1e-12)
+        ax.scatter(
+            [vector[0] * radius],
+            [vector[1] * radius],
+            [vector[2] * radius],
+            s=115,
+            c=[result.spec.color],
+            edgecolors="white",
+            linewidths=1.1,
+            depthshade=False,
+        )
+        ax.text(
+            vector[0] * (radius + 0.055),
+            vector[1] * (radius + 0.055),
+            vector[2] * (radius + 0.055),
+            f"PC{index}",
+            color=result.spec.color,
+            fontsize=8,
+            weight="bold",
+        )
+
+
+def save_pc_positions_on_same_sphere(
+    path: Path,
+    results: list[ProcessedMap],
+    master_samplers,
+    symmetry_fit: dict[str, Any],
+    output_dir: Path,
+) -> None:
+    surface_data = same_sphere_composite_surface(results, master_samplers)
+    axis = symmetry_fit["common_axis"].astype(np.float64)
+    pc_mean = np.mean([result.pc_refined_crystal_vector.astype(np.float64) for result in results], axis=0)
+    if np.linalg.norm(pc_mean) < 1e-12:
+        pc_mean = patch_center_vector(results[0])
+    if float(np.dot(axis, pc_mean)) < 0:
+        axis = -axis
+    views = [
+        ("PC points viewed along fitted common axis", axis),
+        ("PC points viewed from their mean direction", pc_mean),
+        ("PC points with Area 3-360 patch normal view", patch_center_vector(results[0])),
+        ("Oblique view of PC points and Kikuchi patches", axis + 0.8 * pc_mean),
+    ]
+
+    fig = plt.figure(figsize=(15, 15), dpi=220)
+    for index, (title, view_vector) in enumerate(views, start=1):
+        ax = fig.add_subplot(2, 2, index, projection="3d")
+        render_same_sphere_view(
+            ax=ax,
+            surface_data=surface_data,
+            title=title,
+            view_vector=view_vector,
+            axis=axis,
+        )
+        scatter_pc_markers_on_sphere(ax, results)
+    fig.suptitle("Pattern-center directions on the same cubic-symmetry-corrected Kikuchi sphere", fontsize=15)
+    fig.tight_layout(rect=[0, 0, 1, 0.955])
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+    one_fig = plt.figure(figsize=(8.5, 8.5), dpi=240)
+    one_ax = one_fig.add_subplot(1, 1, 1, projection="3d")
+    render_same_sphere_view(
+        ax=one_ax,
+        surface_data=surface_data,
+        title="Same sphere PC directions viewed along the fitted axis",
+        view_vector=axis,
+        axis=axis,
+    )
+    scatter_pc_markers_on_sphere(one_ax, results)
+    one_fig.tight_layout()
+    one_fig.savefig(output_dir / "pt3_pc_positions_same_sphere_axis_view.png", bbox_inches="tight", transparent=True)
+    plt.close(one_fig)
+
+
+def vector_to_lon_colat_deg(vector: np.ndarray) -> tuple[float, float]:
+    vector = vector.astype(np.float64)
+    vector /= max(np.linalg.norm(vector), 1e-12)
+    lon = math.degrees(math.atan2(float(vector[1]), float(vector[0])))
+    colat = math.degrees(math.acos(float(np.clip(vector[2], -1.0, 1.0))))
+    return lon, colat
+
+
+def save_pc_positions_on_same_sphere_lon_colat(path: Path, results: list[ProcessedMap], master_texture: np.ndarray) -> None:
+    master_display = normalize_values(master_texture, np.isfinite(master_texture), low=0.5, high=99.5)
+    fig, ax = plt.subplots(figsize=(14, 7.2), dpi=240)
+    ax.imshow(master_display, cmap="gray", origin="upper", extent=[-180, 180, 180, 0], aspect="auto", alpha=0.70)
+
+    for result in results:
+        nrows, ncols = result.refined_patch[1].shape
+        lon_grid = np.linspace(-180.0, 180.0, ncols)
+        colat_grid = np.linspace(180.0, 0.0, nrows)
+        ax.contour(
+            lon_grid,
+            colat_grid,
+            result.refined_patch[1].astype(float),
+            levels=[0.5],
+            colors=[result.spec.color],
+            linewidths=1.0,
+            alpha=0.95,
+        )
+        lon_original, colat_original = vector_to_lon_colat_deg(result.pc_original_crystal_vector)
+        lon_refined, colat_refined = vector_to_lon_colat_deg(result.pc_refined_crystal_vector)
+        ax.scatter(
+            [lon_original],
+            [colat_original],
+            marker="+",
+            s=155,
+            c="white",
+            linewidths=2.1,
+            edgecolors="black",
+            zorder=5,
+        )
+        ax.scatter(
+            [lon_refined],
+            [colat_refined],
+            marker="o",
+            s=85,
+            facecolors=result.spec.color,
+            edgecolors="white",
+            linewidths=1.1,
+            zorder=6,
+        )
+        ax.text(
+            lon_refined + 2.0,
+            colat_refined - 2.0,
+            result.spec.area.replace("Area ", ""),
+            color=result.spec.color,
+            fontsize=9,
+            weight="bold",
+            zorder=7,
+        )
+
+    ax.set_title("Pattern-center directions on the same cubic-symmetry-corrected master sphere\nwhite +=H5/EDAX PC, colored dot=refined PC")
+    ax.set_xlabel("longitude (deg)")
+    ax.set_ylabel("colatitude (deg)")
+    ax.set_xlim(-180, 180)
+    ax.set_ylim(180, 0)
+    fig.tight_layout()
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
 
@@ -1255,6 +1511,19 @@ def run(args: argparse.Namespace) -> None:
     save_sem_selection_preview(args.output_dir / "pt3_same_face_roi_selection.png", results)
     save_process_overview(args.output_dir / "pt3_same_face_spherical_calibration_workflow.png", results, master_texture)
     save_3d_sphere(args.output_dir / "pt3_same_face_3d_kikuchi_sphere.png", results, master_samplers, symmetry_fit)
+    save_pc_positions_on_patterns(args.output_dir / "pt3_pc_positions_on_patterns.png", results)
+    save_pc_positions_on_same_sphere(
+        args.output_dir / "pt3_pc_positions_on_same_sphere.png",
+        results,
+        master_samplers,
+        symmetry_fit,
+        args.output_dir,
+    )
+    save_pc_positions_on_same_sphere_lon_colat(
+        args.output_dir / "pt3_pc_positions_on_same_sphere_lon_colat.png",
+        results,
+        master_texture,
+    )
     save_clear_spherical_maps(args.output_dir / "pt3_clear_final_spherical_kikuchi_maps.png", results, master_texture)
     save_clear_front_sphere_views(args.output_dir / "pt3_clear_3d_front_facing_kikuchi_spheres.png", results, master_samplers, args.output_dir)
     save_same_sphere_axis_aligned_views(
