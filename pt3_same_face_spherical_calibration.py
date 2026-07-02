@@ -995,6 +995,134 @@ def save_clear_front_sphere_views(path: Path, results: list[ProcessedMap], maste
     plt.close(fig)
 
 
+def same_sphere_composite_surface(results: list[ProcessedMap], master_samplers):
+    master_display = normalize_values(
+        build_master_lon_colat(master_samplers.upper_corrected, master_samplers.lower_corrected),
+        low=0.5,
+        high=99.5,
+    )
+    lon = np.linspace(-np.pi, np.pi, master_display.shape[1])
+    colat = np.linspace(0.0, np.pi, master_display.shape[0])
+    lon_grid, colat_grid = np.meshgrid(lon, colat)
+    x = np.sin(colat_grid) * np.cos(lon_grid)
+    y = np.sin(colat_grid) * np.sin(lon_grid)
+    z = np.cos(colat_grid)
+
+    rgb_sum = np.zeros((*master_display.shape, 3), dtype=np.float32)
+    weight_sum = np.zeros(master_display.shape, dtype=np.float32)
+    for result in results:
+        patch = normalize_values(result.refined_patch[0], result.refined_patch[1], low=0.8, high=99.2)
+        patch = smooth_masked_values(patch, result.refined_patch[1], sigma=0.55)
+        color = np.array(to_rgb(result.spec.color), dtype=np.float32)
+        patch_rgb = 0.82 * np.repeat(patch[..., None], 3, axis=2) + 0.18 * color[None, None, :]
+        mask = result.refined_patch[1]
+        rgb_sum[mask] += patch_rgb[mask]
+        weight_sum[mask] += 1.0
+
+    base = 0.42 * np.repeat(master_display[..., None], 3, axis=2) + 0.11
+    combined = base.copy()
+    occupied = weight_sum > 0
+    combined[occupied] = rgb_sum[occupied] / weight_sum[occupied, None]
+
+    rgba = np.ones((*master_display.shape, 4), dtype=np.float32)
+    rgba[..., :3] = np.clip(combined, 0.0, 1.0)
+    rgba[..., 3] = 1.0
+    return x, y, z, rgba
+
+
+def view_angles_from_vector(vector: np.ndarray) -> tuple[float, float]:
+    vector = vector.astype(np.float64)
+    vector /= max(np.linalg.norm(vector), 1e-12)
+    elev = math.degrees(math.asin(float(np.clip(vector[2], -1.0, 1.0))))
+    azim = math.degrees(math.atan2(float(vector[1]), float(vector[0])))
+    return elev, azim
+
+
+def render_same_sphere_view(
+    ax,
+    surface_data,
+    title: str,
+    view_vector: np.ndarray,
+    axis: np.ndarray | None = None,
+) -> None:
+    x, y, z, rgba = surface_data
+    ax.plot_surface(
+        x,
+        y,
+        z,
+        facecolors=rgba,
+        rstride=1,
+        cstride=1,
+        linewidth=0,
+        antialiased=False,
+        shade=False,
+    )
+    if axis is not None:
+        draw_inplane_axis(ax, axis)
+    setup_3d_axis(ax, title)
+    elev, azim = view_angles_from_vector(view_vector)
+    ax.view_init(elev=elev, azim=azim)
+    ax.set_proj_type("ortho")
+
+
+def save_same_sphere_axis_aligned_views(
+    path: Path,
+    results: list[ProcessedMap],
+    master_samplers,
+    symmetry_fit: dict[str, Any],
+    output_dir: Path,
+) -> None:
+    surface_data = same_sphere_composite_surface(results, master_samplers)
+    axis = symmetry_fit["common_axis"].astype(np.float64)
+    mean_center = np.mean([patch_center_vector(result) for result in results], axis=0)
+    if float(np.dot(axis, mean_center)) < 0:
+        axis = -axis
+    reference_center = patch_center_vector(results[0])
+    oblique = axis + 0.85 * reference_center
+    if np.linalg.norm(oblique) < 1e-12:
+        oblique = reference_center
+
+    views = [
+        ("View along fitted common rotation axis", axis),
+        ("Opposite side of the same common axis", -axis),
+        ("View normal to Area 3-360 final patch", reference_center),
+        ("Oblique view showing shared sphere and axis", oblique),
+    ]
+
+    fig = plt.figure(figsize=(15, 15), dpi=220)
+    for index, (title, view_vector) in enumerate(views, start=1):
+        ax = fig.add_subplot(2, 2, index, projection="3d")
+        render_same_sphere_view(
+            ax=ax,
+            surface_data=surface_data,
+            title=title,
+            view_vector=view_vector,
+            axis=axis,
+        )
+    fig.suptitle("All Pt-3 Kikuchi patterns corrected onto one standard Kikuchi sphere by cubic symmetry", fontsize=15)
+    fig.tight_layout(rect=[0, 0, 1, 0.955])
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+    for suffix, view_vector in [
+        ("axis_view", axis),
+        ("reference_patch_view", reference_center),
+        ("oblique_axis_view", oblique),
+    ]:
+        one_fig = plt.figure(figsize=(8.5, 8.5), dpi=240)
+        one_ax = one_fig.add_subplot(1, 1, 1, projection="3d")
+        render_same_sphere_view(
+            ax=one_ax,
+            surface_data=surface_data,
+            title=f"Same Kikuchi sphere: {suffix.replace('_', ' ')}",
+            view_vector=view_vector,
+            axis=axis,
+        )
+        one_fig.tight_layout()
+        one_fig.savefig(output_dir / f"pt3_same_sphere_{suffix}.png", bbox_inches="tight", transparent=True)
+        plt.close(one_fig)
+
+
 def scatter_patch(ax, result: ProcessedMap, alpha: float = 0.35, size: float = 2.0, textured: bool = False) -> None:
     vectors = result.crystal_vectors
     if textured:
@@ -1129,6 +1257,13 @@ def run(args: argparse.Namespace) -> None:
     save_3d_sphere(args.output_dir / "pt3_same_face_3d_kikuchi_sphere.png", results, master_samplers, symmetry_fit)
     save_clear_spherical_maps(args.output_dir / "pt3_clear_final_spherical_kikuchi_maps.png", results, master_texture)
     save_clear_front_sphere_views(args.output_dir / "pt3_clear_3d_front_facing_kikuchi_spheres.png", results, master_samplers, args.output_dir)
+    save_same_sphere_axis_aligned_views(
+        args.output_dir / "pt3_same_sphere_axis_aligned_kikuchi_patterns.png",
+        results,
+        master_samplers,
+        symmetry_fit,
+        args.output_dir,
+    )
 
     print(f"Saved outputs to {args.output_dir}")
     print(
