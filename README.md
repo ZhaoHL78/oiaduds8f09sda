@@ -183,12 +183,44 @@
 - 由四张 transformed SEM 的有效 mask 交集计算最大内切圆，作为四组 EBSD 的公共 circular ROI。
 - 输出 aligned SEM、overlay、公共 mask、最大圆、以及该圆反投影回原始 SEM 的图。
 
+### 13. Pt high-resolution 十二组 30° EBSD 的 LightGlue 对齐和 PC 锚点可视化
+
+- `pt_highres_30deg_lightglue_calibration.py` 读取 `E:\ZHL\EBSD-RAW\20251217Pt-high resolution` 中的 12 组高分辨率 EBSD：
+  - H5 mapping: `Area 8-0, 8-30, ..., 8-330 / OIM Map 1`
+  - UP2: `Area 3` 到 `Area 14`，对应 0° 到 330°。
+- 使用 LightGlue + SuperPoint 对相邻角度 SEM 做配准：`30 -> 0`、`60 -> 30`、...、`330 -> 300`。
+- 每一对配准先按已知 30° in-plane rotation 预旋转，再用 LightGlue/SuperPoint 匹配和 RANSAC affine refinement，最后把所有 SEM transform 串联到 0° 坐标系。
+- 在共同有效区域内自动选择一个远离晶界、IQ/CI 综合较高的同一物理位置点，并反投影到每个 EBSD mapping 的 raw SEM/grid index。
+- 对这 12 个 index 读取对应 UP2 Kikuchi pattern，沿用之前流程：
+  - 圆形 detector mask；
+  - 背景扣除、CLAHE 衬度增强；
+  - H5/EDAX PC + H5 orientation 投影到 master sphere；
+  - 小范围 PC finetune；
+  - cubic symmetry 等价落点选择，使 12 张 pattern 尽量满足共同 30° 轴线关系；
+  - 单独绘制 PC 在 pattern 上的位置和 PC 在 master sphere 上的晶体学锚点。
+- 当前本机运行结果中，SEM 相邻配准全部使用 `lightglue_superpoint`，没有使用 fallback；各对 RANSAC inlier 约 48-81 个，RMSE 约 2.0-2.6 px。
+- 一个重要诊断结果：在 H5 orientation + cubic symmetry 等价落点下，最优共同轴的 `Q30` 约为 `22.82°`，不是理想 30°。这说明 SEM 物理旋转成立，但软件 orientation / PC / 坐标链映射到标准球面后仍存在需要继续解释的几何偏差。
+- 输出：
+  - `pt_highres_sem_lightglue_alignment_overview.png`
+  - `pt_highres_same_point_selection.png`
+  - `pt_highres_selected_kikuchi_pc_patterns.png`
+  - `pt_highres_spherical_calibration_workflow.png`
+  - `pt_highres_same_sphere_lon_colat.png`
+  - `pt_highres_same_sphere_3d.png`
+  - `pt_highres_pc_anchor_lon_colat.png`
+  - `pt_highres_pc_anchor_3d.png`
+  - `pt_highres_pair_alignments.csv`
+  - `pt_highres_30deg_spherical_calibration_summary.csv`
+  - `pt_highres_30deg_cubic_symmetry_axis_prior_summary.csv`
+  - `pt_highres_sem_transforms_raw_to_angle0.npz`
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
 - `diagnose_edax_transform_chain.py`
 - `single_kikuchi_pc_finetune.py`
 - `pt3_same_face_spherical_calibration.py`
+- `pt_highres_30deg_lightglue_calibration.py`
 - `visualize_edax_projection_sets.py`
 - `visualize_edax_match_3d.py`
 - `visualize_scan_position_pc_correction.py`
@@ -332,7 +364,21 @@ D:\anaconda3\envs\torch\python.exe .\align_pt1_inplane_sem_common_circle.py `
   --output-dir outputs\pt1_inplane_sem_common_circle_E_20251209Pt
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\pt_highres_30deg_lightglue_calibration.py `
+  --h5 "E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217.edaxh5" `
+  --up2-root "E:\ZHL\EBSD-RAW\20251217Pt-high resolution" `
+  --output-dir outputs\pt_highres_30deg_lightglue_calibration
+```
+
 ## 版本改动
+
+### 2026-07-04
+
+- 新增 `pt_highres_30deg_lightglue_calibration.py`，用于 Pt high-resolution 十二组 30° in-plane EBSD 的 SEM 相邻配准、同一物理点选取、Kikuchi 球面标定和 PC 锚点可视化。
+- 新脚本优先使用 LightGlue + SuperPoint；本机已安装 `lightglue`，并确认 `torch 2.12.0.dev20260408+cu128` 能使用 RTX 5090。
+- 当前运行输出保存在 `outputs/pt_highres_30deg_lightglue_calibration/`，仅作为本地结果，不提交 GitHub。
+- 当前诊断结论：SEM align 质量较好，但 H5 orientation 经过 cubic symmetry 选择后得到的最优 `Q30` 为约 `22.82°`，与物理 30° 存在差异，后续应重点检查 orientation/PC/坐标链在标准球面上的几何解释。
 
 ### 2026-07-02
 
