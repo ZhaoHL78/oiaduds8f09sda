@@ -44,9 +44,10 @@ from pt3_same_face_spherical_calibration import (
     master_surface,
     normalize_values,
     orthonormalize_rotation,
-    patch_center_vector,
     pc_crystal_vector,
     project_vectors_patch,
+    render_front_pattern_only,
+    render_front_sphere_view,
     render_same_sphere_view,
     rotation_angle_deg,
     rotation_axis,
@@ -761,6 +762,20 @@ def apply_cubic_symmetry_axis_prior_30deg(results: list[ProcessedMap]) -> dict[s
         float(rotation_angle_deg(np.linalg.matrix_power(best["q30"], step))) for step in range(len(results))
     ]
     best["symmetry_names"] = tuple(symmetries[int(index)][0] for index in best["symmetry_indices"])
+    for result, symmetry_index in zip(results, best["symmetry_indices"]):
+        symmetry_name, symmetry_matrix = symmetries[int(symmetry_index)]
+        result.original_patch = project_vectors_patch(result.crystal_vectors, result.crystal_values)
+        result.symmetry_name = symmetry_name
+        result.symmetry_matrix = symmetry_matrix
+        result.axis_prior_score = float(best["score"])
+        result.orientation_matrix = result.base_orientation_matrix @ symmetry_matrix
+        result.orientation_variant = f"h5_{result.base_orientation_variant} @ cubic_sym({symmetry_name})"
+        result.crystal_vectors = (result.crystal_vectors @ symmetry_matrix).astype(np.float32)
+        result.pc_original_crystal_vector = (result.pc_original_crystal_vector @ symmetry_matrix).astype(np.float32)
+        result.pc_original_crystal_vector /= max(np.linalg.norm(result.pc_original_crystal_vector), 1e-12)
+        result.pc_refined_crystal_vector = (result.pc_refined_crystal_vector @ symmetry_matrix).astype(np.float32)
+        result.pc_refined_crystal_vector /= max(np.linalg.norm(result.pc_refined_crystal_vector), 1e-12)
+        result.refined_patch = project_vectors_patch(result.crystal_vectors, result.crystal_values)
     return best
 
 
@@ -977,185 +992,6 @@ def physical_sequence_matrices(
     return matrices
 
 
-def _signed_common_axis(axes: list[np.ndarray]) -> tuple[np.ndarray, list[np.ndarray], list[float]]:
-    signed: list[np.ndarray] = []
-    reference: np.ndarray | None = None
-    for axis in axes:
-        axis = axis.astype(np.float64)
-        axis /= max(np.linalg.norm(axis), 1e-12)
-        if reference is None:
-            reference = axis
-        elif float(np.dot(axis, reference)) < 0:
-            axis = -axis
-        signed.append(axis)
-    common = np.mean(np.stack(signed, axis=0), axis=0)
-    common /= max(np.linalg.norm(common), 1e-12)
-    scatter = [
-        math.degrees(math.acos(float(np.clip(abs(np.dot(axis, common)), -1.0, 1.0))))
-        for axis in signed
-    ]
-    return common, signed, scatter
-
-
-def fixed_adjacent_rotation_rows(results: list[ProcessedMap], side: str, expected_step_deg: float = 30.0) -> tuple[list[dict[str, Any]], np.ndarray]:
-    matrices = [orthonormalize_rotation(result.orientation_matrix) for result in results]
-    axes: list[np.ndarray] = []
-    raw_rows: list[dict[str, Any]] = []
-    for index, result in enumerate(results):
-        next_index = (index + 1) % len(results)
-        next_result = results[next_index]
-        if side == "right":
-            relative = matrices[index].T @ matrices[next_index]
-        elif side == "left":
-            relative = matrices[next_index] @ matrices[index].T
-        else:
-            raise ValueError(f"Unknown fixed-axis side {side!r}")
-        angle = float(rotation_angle_deg(relative))
-        axis = rotation_axis(relative)
-        axes.append(axis)
-        expected = float((next_result.spec.angle_deg - result.spec.angle_deg) % 360)
-        if expected == 0.0:
-            expected = expected_step_deg
-        raw_rows.append(
-            {
-                "side": side,
-                "from_angle_deg": result.spec.angle_deg,
-                "to_angle_deg": next_result.spec.angle_deg,
-                "expected_step_deg": expected,
-                "observed_angle_deg": angle,
-                "angle_error_deg": angle - expected_step_deg,
-                "axis_x": axis[0],
-                "axis_y": axis[1],
-                "axis_z": axis[2],
-            }
-        )
-    common_axis, signed_axes, scatter = _signed_common_axis(axes)
-    for row, signed_axis, scatter_deg in zip(raw_rows, signed_axes, scatter):
-        row["signed_axis_x"] = signed_axis[0]
-        row["signed_axis_y"] = signed_axis[1]
-        row["signed_axis_z"] = signed_axis[2]
-        row["common_axis_x"] = common_axis[0]
-        row["common_axis_y"] = common_axis[1]
-        row["common_axis_z"] = common_axis[2]
-        row["axis_scatter_deg"] = scatter_deg
-    return raw_rows, common_axis
-
-
-def fit_axis_model_to_fixed_placements(
-    results: list[ProcessedMap],
-    expected_step_deg: float,
-    maxiter: int,
-) -> dict[str, Any]:
-    angles = [float(result.spec.angle_deg) for result in results]
-    fixed_matrices = [orthonormalize_rotation(result.orientation_matrix) for result in results]
-    pair_rows_by_side: dict[str, list[dict[str, Any]]] = {}
-    start_axes: dict[str, np.ndarray] = {}
-    for side in ("right", "left"):
-        rows, common_axis = fixed_adjacent_rotation_rows(results, side=side, expected_step_deg=expected_step_deg)
-        pair_rows_by_side[side] = rows
-        start_axes[side] = common_axis
-
-    best: dict[str, Any] | None = None
-    for side in ("right", "left"):
-        start_reference = fixed_matrices[0]
-        start_axis = start_axes[side]
-
-        def unpack(params: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
-            reference = orthonormalize_rotation(start_reference @ rotvec_to_matrix(params[:3]))
-            axis = params[3:6].astype(np.float64)
-            if np.linalg.norm(axis) < 1e-10:
-                axis = start_axis.copy()
-            axis /= max(np.linalg.norm(axis), 1e-12)
-            predicted = physical_sequence_matrices(reference, axis, angles, side=side)
-            return reference, axis, predicted
-
-        def evaluate(params: np.ndarray) -> dict[str, Any]:
-            reference, axis, predicted = unpack(params)
-            residuals = [
-                float(rotation_angle_deg(pred_matrix.T @ fixed_matrix))
-                for pred_matrix, fixed_matrix in zip(predicted, fixed_matrices)
-            ]
-            objective = float(np.mean(np.square(residuals)))
-            return {
-                "side": side,
-                "reference_matrix": reference,
-                "common_axis": axis,
-                "predicted_matrices": predicted,
-                "residuals_deg": residuals,
-                "objective": objective,
-                "rms_residual_deg": float(math.sqrt(objective)),
-                "max_residual_deg": float(max(residuals)),
-            }
-
-        x0 = np.zeros(6, dtype=np.float64)
-        x0[3:6] = start_axis
-        initial = evaluate(x0)
-        result = optimize.minimize(
-            lambda params: evaluate(params)["objective"],
-            x0,
-            method="Powell",
-            options={"maxiter": maxiter, "xtol": 1e-5, "ftol": 1e-6, "disp": False},
-        )
-        candidate = evaluate(result.x)
-        candidate["optimizer_success"] = bool(result.success)
-        candidate["optimizer_message"] = str(result.message)
-        candidate["initial_rms_residual_deg"] = initial["rms_residual_deg"]
-        if best is None or candidate["objective"] < best["objective"]:
-            best = candidate
-
-    if best is None:
-        raise RuntimeError("Could not estimate an axis from fixed Kikuchi placements")
-
-    best["expected_step_deg"] = float(expected_step_deg)
-    best["pair_rows_by_side"] = pair_rows_by_side
-    best["angles_by_step_deg"] = [
-        float(rotation_angle_deg(best["predicted_matrices"][0].T @ matrix))
-        for matrix in best["predicted_matrices"]
-    ]
-    best["angle30_deg"] = float(rotation_angle_deg(best["predicted_matrices"][0].T @ best["predicted_matrices"][1]))
-    return best
-
-
-def write_fixed_axis_summary(path: Path, results: list[ProcessedMap], fit: dict[str, Any]) -> None:
-    axis = fit["common_axis"]
-    rows: list[dict[str, Any]] = []
-    for index, result in enumerate(results):
-        rows.append(
-            {
-                "angle_deg": result.spec.angle_deg,
-                "area": result.spec.area,
-                "axis_side": fit["side"],
-                "expected_step_deg": fit["expected_step_deg"],
-                "axis_x": axis[0],
-                "axis_y": axis[1],
-                "axis_z": axis[2],
-                "rms_residual_deg": fit["rms_residual_deg"],
-                "max_residual_deg": fit["max_residual_deg"],
-                "residual_to_fixed_placement_deg": fit["residuals_deg"][index],
-                "model_angle_from_reference_deg": fit["angles_by_step_deg"][index],
-                "fixed_pc_refined_sphere_x": result.pc_refined_crystal_vector[0],
-                "fixed_pc_refined_sphere_y": result.pc_refined_crystal_vector[1],
-                "fixed_pc_refined_sphere_z": result.pc_refined_crystal_vector[2],
-                "orientation_variant": result.orientation_variant,
-                "refined_score": result.refined_score,
-            }
-        )
-    with path.open("w", newline="", encoding="utf-8-sig") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def write_fixed_pair_rotation_summary(path: Path, fit: dict[str, Any]) -> None:
-    rows: list[dict[str, Any]] = []
-    for side in ("right", "left"):
-        rows.extend(fit["pair_rows_by_side"][side])
-    with path.open("w", newline="", encoding="utf-8-sig") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
 def write_symmetry_summary(path: Path, results: list[ProcessedMap], fit: dict[str, Any]) -> None:
     axis = fit["common_axis"]
     rows: list[dict[str, Any]] = []
@@ -1342,7 +1178,7 @@ def save_process_overview(path: Path, results: list[ProcessedMap], master_textur
         axes[row, 3].imshow(master_texture, cmap="gray", origin="upper", extent=[-180, 180, 180, 0], aspect="auto")
         imshow_sphere(axes[row, 3], result.original_patch[0], result.original_patch[1], "H5 orientation\nbefore symmetry")
         axes[row, 4].imshow(master_texture, cmap="gray", origin="upper", extent=[-180, 180, 180, 0], aspect="auto")
-        imshow_sphere(axes[row, 4], result.refined_patch[0], result.refined_patch[1], "fixed finetuned\nsphere placement")
+        imshow_sphere(axes[row, 4], result.refined_patch[0], result.refined_patch[1], "cubic symmetry\nsphere placement")
     fig.suptitle("Pt high-resolution 30-degree sequence: SEM alignment, Kikuchi preprocessing, sphere projection")
     fig.tight_layout(rect=[0, 0, 1, 0.985])
     fig.savefig(path, bbox_inches="tight")
@@ -1360,7 +1196,7 @@ def save_same_sphere_lon_colat(path: Path, results: list[ProcessedMap], master_t
         ax.contour(lon_grid, colat_grid, result.refined_patch[1].astype(float), levels=[0.5], colors=[result.spec.color], linewidths=0.95)
         lon, colat = vector_to_lon_colat_deg(result.pc_refined_crystal_vector)
         ax.scatter([lon], [colat], s=42, facecolors=result.spec.color, edgecolors="white", linewidths=0.8, zorder=5)
-    ax.set_title("Twelve selected Kikuchi patterns at their fixed finetuned master-sphere positions")
+    ax.set_title("Twelve selected Kikuchi patterns after cubic-symmetry placement on one master sphere")
     ax.set_xlabel("longitude (deg)")
     ax.set_ylabel("colatitude (deg)")
     ax.set_xlim(-180, 180)
@@ -1463,28 +1299,28 @@ def save_same_sphere_3d(path: Path, results: list[ProcessedMap], master_samplers
     for index, (title, view_vector) in enumerate(views, start=1):
         ax = fig.add_subplot(2, 2, index, projection="3d")
         render_same_sphere_view(ax, surface_data, title=title, view_vector=view_vector, axis=axis)
-    fig.suptitle("All high-resolution 30-degree Kikuchi patterns at fixed finetuned positions on one master sphere")
+    fig.suptitle("All high-resolution 30-degree Kikuchi patterns after cubic-symmetry placement on one master sphere")
     fig.tight_layout(rect=[0, 0, 1, 0.955])
     fig.savefig(path, bbox_inches="tight", transparent=True)
     plt.close(fig)
 
 
-def save_fixed_front_view_contact_sheet(path: Path, results: list[ProcessedMap], master_samplers, axis_fit: dict[str, Any]) -> None:
-    axis = axis_fit["common_axis"].astype(np.float64)
-    fig = plt.figure(figsize=(18, 13), dpi=220)
-    for index, result in enumerate(results, start=1):
-        ax = fig.add_subplot(3, 4, index, projection="3d")
-        surface_data = same_sphere_composite_surface([result], master_samplers)
-        center = patch_center_vector(result)
-        render_same_sphere_view(
-            ax,
-            surface_data,
-            title=f"{result.spec.angle_deg} deg fixed finetuned placement\nscore={result.refined_score:+.4f}",
-            view_vector=center,
-            axis=axis,
+def save_highres_clear_front_views(path: Path, results: list[ProcessedMap], master_samplers, output_dir: Path) -> None:
+    fig, axes = plt.subplots(3, 4, figsize=(18, 13), dpi=220)
+    for ax, result in zip(axes.ravel(), results):
+        image = render_front_sphere_view(result, master_samplers, size=1300)
+        ax.imshow(image)
+        ax.set_title(
+            f"{result.spec.angle_deg} deg cubic-symmetry placement\n"
+            f"sym={result.symmetry_name}, score={result.refined_score:+.4f}",
+            fontsize=9,
         )
+        ax.axis("off")
+
+        individual = render_front_pattern_only(result, size=1300)
+        plt.imsave(output_dir / f"pt_highres_front_pattern_{result.spec.angle_deg:03d}.png", individual)
     fig.suptitle(
-        "Fixed finetuned Kikuchi placements viewed normal to each patch; axis is measured, not used to move patches",
+        "High-resolution 30-degree Kikuchi patterns: clear front views after cubic-symmetry placement",
         fontsize=15,
     )
     fig.tight_layout(rect=[0, 0, 1, 0.955])
@@ -1541,15 +1377,8 @@ def run(args: argparse.Namespace) -> None:
         if index == 0 and args.orientation_mode == "reference_variant":
             fixed_orientation_variant = result.base_orientation_variant
 
-    fixed_axis_fit = fit_axis_model_to_fixed_placements(
-        results=results,
-        expected_step_deg=30.0,
-        maxiter=args.fixed_axis_maxiter,
-    )
     symmetry_fit = apply_cubic_symmetry_axis_prior_30deg(results)
     write_summary_csv(args.output_dir / "pt_highres_30deg_spherical_calibration_summary.csv", results, selection["selected_ref_xy"])
-    write_fixed_axis_summary(args.output_dir / "pt_highres_fixed_placement_30deg_axis_summary.csv", results, fixed_axis_fit)
-    write_fixed_pair_rotation_summary(args.output_dir / "pt_highres_fixed_placement_adjacent_rotations.csv", fixed_axis_fit)
     write_symmetry_summary(args.output_dir / "pt_highres_30deg_cubic_symmetry_axis_prior_summary.csv", results, symmetry_fit)
 
     if args.save_geometric_axis_locked:
@@ -1569,15 +1398,15 @@ def run(args: argparse.Namespace) -> None:
     save_kikuchi_pc_patterns(args.output_dir / "pt_highres_selected_kikuchi_pc_patterns.png", results)
     save_process_overview(args.output_dir / "pt_highres_spherical_calibration_workflow.png", results, master_texture)
     save_same_sphere_lon_colat(args.output_dir / "pt_highres_same_sphere_lon_colat.png", results, master_texture)
-    save_same_sphere_3d(args.output_dir / "pt_highres_same_sphere_3d.png", results, master_samplers, fixed_axis_fit)
-    save_fixed_front_view_contact_sheet(
-        args.output_dir / "pt_highres_fixed_placement_front_views_3d.png",
+    save_same_sphere_3d(args.output_dir / "pt_highres_same_sphere_3d.png", results, master_samplers, symmetry_fit)
+    save_highres_clear_front_views(
+        args.output_dir / "pt_highres_cubic_symmetry_front_views.png",
         results,
         master_samplers,
-        fixed_axis_fit,
+        args.output_dir,
     )
     save_pc_anchor_lon_colat(args.output_dir / "pt_highres_pc_anchor_lon_colat.png", results, master_texture)
-    save_pc_anchor_3d(args.output_dir / "pt_highres_pc_anchor_3d.png", results, master_samplers, fixed_axis_fit)
+    save_pc_anchor_3d(args.output_dir / "pt_highres_pc_anchor_3d.png", results, master_samplers, symmetry_fit)
     if args.save_geometric_axis_locked:
         save_same_sphere_lon_colat(
             args.output_dir / "pt_highres_geometric_axis_locked_same_sphere_lon_colat.png",
@@ -1604,13 +1433,7 @@ def run(args: argparse.Namespace) -> None:
 
     print(f"Saved outputs to {args.output_dir}")
     print(
-        "Fixed-placement 30-degree axis estimate: "
-        f"side={fixed_axis_fit['side']}, rms_residual={fixed_axis_fit['rms_residual_deg']:.3f} deg, "
-        f"max_residual={fixed_axis_fit['max_residual_deg']:.3f} deg, "
-        f"axis={tuple(round(float(x), 5) for x in fixed_axis_fit['common_axis'])}"
-    )
-    print(
-        "Read-only cubic-symmetry diagnostic: "
+        "High-res 30-degree cubic-symmetry placement: "
         f"score={symmetry_fit['score']:.5f}, angle30={symmetry_fit['angle30_deg']:.2f}, "
         f"axis={tuple(round(float(x), 5) for x in symmetry_fit['common_axis'])}"
     )
@@ -1659,12 +1482,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--intensity-weight", type=float, default=0.35)
     parser.add_argument("--band-weight", type=float, default=0.65)
     parser.add_argument("--max-3d-points-per-pattern", type=int, default=140000)
-    parser.add_argument(
-        "--fixed-axis-maxiter",
-        type=int,
-        default=120,
-        help="Iterations for estimating the 30-degree axis from already fixed, finetuned sphere placements.",
-    )
     parser.add_argument(
         "--save-geometric-axis-locked",
         action="store_true",

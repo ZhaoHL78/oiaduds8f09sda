@@ -196,13 +196,13 @@
   - 背景扣除、CLAHE 衬度增强；
   - H5/EDAX PC + H5 orientation 投影到 master sphere；
   - 小范围 PC finetune；
-  - 固定每张 pattern 的 finetuned master-sphere 落点，不用 30° 条件移动 patch；
-  - 只在这些固定落点上做相邻 30° 旋转诊断和最佳共同轴线拟合；
-  - cubic symmetry 等价分支只作为只读诊断，不改写主结果；
+  - 按 Pt-3 的 cubic symmetry axis placement 逻辑选择等价晶体分支；
+  - 同步更新 `orientation_matrix`、`crystal_vectors`、PC anchor 和 `refined_patch`；
+  - 用 4e9e21b 的高清 front-view 思路输出每张 pattern 正对观察视角的球面图；
   - 单独绘制 PC 在 pattern 上的位置和 PC 在 master sphere 上的晶体学锚点。
 - 当前本机运行结果中，SEM 相邻配准全部使用 `lightglue_superpoint`，没有使用 fallback；各对 RANSAC inlier 约 48-81 个，RMSE 约 2.0-2.6 px。
-- 当前原则：EDAX PC + H5 Euler orientation + PC finetune 得到的单张最佳贴合位置是主结果；30° 物理旋转不能反过来移动这个位置。
-- 新的 fixed-placement 轴线诊断会输出相邻 pair 的实际旋转角、轴线方向、轴线散布，以及 `F_k ≈ F_0 R_axis(k * 30°)` 或 `F_k ≈ R_axis(k * 30°) F_0` 对固定落点的最佳拟合残差。残差用于判断 orientation/PC/坐标 convention 是否解释得通，而不是用于强行重排 patch。
+- 当前固定流程来自 `21dce0a` 和 `4e9e21b`：先做单张 PC/orientation/finetune，再只通过 cubic symmetry 等价分支把多张 pattern 放到同一个 master sphere 坐标解释中，并输出清晰的球面可视化。
+- 当前 12 组运行的共同 SEM 参考点为 `(342.07, 275.83)`；cubic symmetry placement 诊断为 `score=10.73288`、`angle30=22.82°`、共同轴约为 `(0.873, 0.488, -0.017)`。
 - 输出：
   - `pt_highres_sem_lightglue_alignment_overview.png`
   - `pt_highres_same_point_selection.png`
@@ -212,12 +212,11 @@
   - `pt_highres_same_sphere_3d.png`
   - `pt_highres_pc_anchor_lon_colat.png`
   - `pt_highres_pc_anchor_3d.png`
-  - `pt_highres_fixed_placement_front_views_3d.png`
+  - `pt_highres_cubic_symmetry_front_views.png`
+  - `pt_highres_front_pattern_000.png` 到 `pt_highres_front_pattern_330.png`
   - `pt_highres_pair_alignments.csv`
   - `pt_highres_30deg_spherical_calibration_summary.csv`
   - `pt_highres_30deg_cubic_symmetry_axis_prior_summary.csv`
-  - `pt_highres_fixed_placement_30deg_axis_summary.csv`
-  - `pt_highres_fixed_placement_adjacent_rotations.csv`
   - `pt_highres_sem_transforms_raw_to_angle0.npz`
 
 主要代码：
@@ -381,15 +380,14 @@ D:\anaconda3\envs\torch\python.exe .\pt_highres_30deg_lightglue_calibration.py `
 
 ### 2026-07-06
 
-- 修正 `pt_highres_30deg_lightglue_calibration.py` 的 30° 轴线逻辑：不再用 30° 条件重新生成或移动 Kikuchi patch 的球面落点。
-- 新流程以 EDAX PC + H5 Euler orientation + PC finetune 得到的固定 master-sphere 落点为主结果；30° 物理旋转只用于事后估计共同旋转轴线和计算残差。
-- cubic symmetry 30° 搜索现在只是只读诊断，不再改写 `orientation_matrix`、`crystal_vectors`、PC anchor 或球面贴图。
-- 新增清晰的 fixed-placement 正视 3D contact sheet，逐张从 patch 法向观察已贴合到 master sphere 的 Kikuchi 图。
-- 当前实测诊断：固定落点最佳 30° 轴模型的 RMS residual 约 `100.15°`，相邻 pair 的实际旋转角大量落在 `59°-174°`，说明当前固定落点序列本身还不能解释为同一轴每步 30° 的物理旋转。后续应优先检查 orientation convention、同一物理点/同一晶面的选择和 detector/sample frame 解释，而不是移动 patch。
+- 将 `pt_highres_30deg_lightglue_calibration.py` 固定回 Pt-3 的 cubic symmetry axis placement 路线。
+- 该流程保留 LightGlue/SuperPoint 的 12 组 SEM 对齐和同一物理点选择；每张 Kikuchi 先单独完成 EDAX PC + H5 orientation + PC finetune，再用 cubic symmetry 选择等价晶体分支。
+- 移除默认的 fixed-placement residual 路线和 match-preserving 连续旋转优化，避免和 Pt-3 固定流程混在一起。
+- 新增 12 张高清正视球面图和总览 contact sheet，采用 4e9e21b 中的 front-view rasterization 方式。
+- 已用 12 组 Pt high-resolution 数据跑通：共同参考点 `(342.07, 275.83)`，12 张图均有对应 raw EBSD index，当前 cubic symmetry placement 的 `angle30=22.82°`。
 - 新增本地输出：
-  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_fixed_placement_front_views_3d.png`
-  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_fixed_placement_30deg_axis_summary.csv`
-  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_fixed_placement_adjacent_rotations.csv`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_cubic_symmetry_front_views.png`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_front_pattern_000.png` 到 `pt_highres_front_pattern_330.png`
 
 ### 2026-07-04
 
