@@ -15,7 +15,7 @@
 - `diagnose_edax_transform_chain.py`: 系统诊断 EDAX PC convention、图像 flip/rotate、sample tilt/camera elevation 和 orientation 矩阵解释。
 - `single_kikuchi_pc_finetune.py`: 单张 Kikuchi pattern 的端到端验证入口，包含图像预处理、EDAX PC 球面标定、orientation 投影到 master sphere、局部 PC finetune 和可视化。
 - `pt3_same_face_spherical_calibration.py`: Pt-3 四组 90° in-plane EBSD 的同一晶面 Kikuchi 球形标定流程，包含 SEM 同晶面 ROI 选点、保守圆形 mask 预处理、H5 orientation 单图定位、cubic symmetry 等价落点选择、共同轴线闭包、PC 在 pattern 上的位置标注、PC 方向投影到同一个 master sphere 的锚点诊断、同一 master sphere 合成贴图、高清球面 Kikuchi 图和正视 3D master sphere 贴合可视化。
-- `pt_highres_30deg_lightglue_calibration.py`: Pt high-resolution 十二组 30° in-plane EBSD 流程，使用相邻角度 LightGlue/SuperPoint SEM 配准链把全部 mapping 对齐到 0°，自动选取同一晶面上的同一物理位置，读取对应 UP2 Kikuchi，执行球面标定、PC finetune、H5+cubic 自由落点诊断、匹配保持的 30° 物理序列优化和单独 PC 晶体学锚点可视化。旧的 geometric exact-30 axis lock 只作为初始化/诊断，不作为最终结果。
+- `pt_highres_30deg_lightglue_calibration.py`: Pt high-resolution 十二组 30° in-plane EBSD 流程，使用相邻角度 LightGlue/SuperPoint SEM 配准链把全部 mapping 对齐到 0°，自动选取同一晶面上的同一物理位置，读取对应 UP2 Kikuchi，执行球面标定、PC finetune、固定球面落点可视化、相邻 30° 固定落点旋转诊断和 PC 晶体学锚点可视化。30° 物理条件只用于从已匹配好的球面落点中估计旋转轴线，不再移动 Kikuchi patch。
 - `visualize_edax_projection_sets.py`: 批量展示多张 pattern 在同一固定链路下投影到 master sphere 的结果。
 - `visualize_edax_match_3d.py`: 用 PyVista 输出标准 Kikuchi sphere 与实验 pattern patch 的 3D 叠加图。
 - `visualize_scan_position_pc_correction.py` / `score_scan_position_pc_correction.py`: 用扫描位置估计 PC 漂移，并对不同 PC correction 模型评分。
@@ -44,7 +44,7 @@
 10. 需要从 H5 全局整理 mapping/SEM/UP2 文件名关系时，跑 `export_h5_mapping_sem_correspondence.py`，先看 `h5_mapping_sem_contact_sheet.png` 和 `h5_mapping_sem_correspondence.csv`。
 11. 需要按“每个 UP2 文件”核对 EBSD 和 Kikuchi 时，跑 `export_up2_ebsd_kikuchi_correspondence.py`，优先查看 `up2_ebsd_kikuchi_correspondence.csv`。
 12. 需要对 Pt-1 四组 in-plane 旋转 EBSD 取共同分析区域时，跑 `align_pt1_inplane_sem_common_circle.py`，使用输出的最大圆形 ROI。
-13. 需要分析 Pt high-resolution 十二组 30° in-plane EBSD 时，跑 `pt_highres_30deg_lightglue_calibration.py`，先检查 LightGlue SEM align 和同一点选择，再比较 H5+cubic 自由球面落点、geometric exact-30 初始化器与 match-preserving 30° 物理序列。当前关键观察是 SEM 30° 配准成立，但 H5 orientation + cubic symmetry 后的最优球面 `Q30` 约为 22.82°；单纯硬凑 `F_k = F_0 R_axis(k * 30°)` 会破坏 Kikuchi pattern 与 master sphere 的贴合，因此最终流程改为以 pattern/master sphere 匹配分数为主目标，在允许很小分数损失的前提下寻找满足 30° 物理关系的共同旋转轴。当前 match-preserving 序列被接受，`Q30 = 30.00°`，轴约为 `(0.832, 0.535, 0.147)`，平均匹配分数相对自由落点没有下降。
+13. 需要分析 Pt high-resolution 十二组 30° in-plane EBSD 时，跑 `pt_highres_30deg_lightglue_calibration.py`，先检查 LightGlue SEM align 和同一点选择，再看每张 Kikuchi pattern 用 EDAX PC + H5 orientation + PC finetune 得到的固定 master-sphere 落点。当前原则是：单张 pattern 和 master sphere 的最佳贴合位置不能被 30° 先验改写；30° 物理旋转只用于事后测量这些固定落点之间是否存在共同旋转轴，并输出相邻 pair 的实际旋转角、轴线散布和最佳轴模型残差。如果残差很大，说明 orientation/坐标 convention/PC/样品旋转轴解释仍有误差，而不是把 patch 硬移动到 30°。
 
 ## 多角度 mapping align 方向
 
