@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.colors import to_rgb
+from scipy import optimize
 from skimage import exposure, filters
 
 from project_edax_oim_to_sphere import (
@@ -775,6 +776,181 @@ def apply_cubic_symmetry_axis_prior_30deg(results: list[ProcessedMap]) -> dict[s
     return best
 
 
+def axis_angle_rotation(axis: np.ndarray, angle_deg: float) -> np.ndarray:
+    axis = axis.astype(np.float64)
+    axis /= max(np.linalg.norm(axis), 1e-12)
+    angle = math.radians(float(angle_deg))
+    x, y, z = axis
+    c = math.cos(angle)
+    s = math.sin(angle)
+    one_c = 1.0 - c
+    return np.array(
+        [
+            [c + x * x * one_c, x * y * one_c - z * s, x * z * one_c + y * s],
+            [y * x * one_c + z * s, c + y * y * one_c, y * z * one_c - x * s],
+            [z * x * one_c - y * s, z * y * one_c + x * s, c + z * z * one_c],
+        ],
+        dtype=np.float64,
+    )
+
+
+def fit_exact_axis_sequence(
+    matrices: list[np.ndarray],
+    angles_deg: list[float],
+    initial_axis: np.ndarray,
+) -> dict[str, Any]:
+    relative_angles = [float(angle - angles_deg[0]) for angle in angles_deg]
+
+    def solve_for_axis(axis_guess: np.ndarray) -> dict[str, Any]:
+        axis = axis_guess.astype(np.float64)
+        norm = np.linalg.norm(axis)
+        if norm < 1e-12:
+            axis = initial_axis.astype(np.float64)
+            norm = np.linalg.norm(axis)
+        axis /= max(norm, 1e-12)
+        rotations = [axis_angle_rotation(axis, angle) for angle in relative_angles]
+        reference_votes = [matrix @ rotation.T for matrix, rotation in zip(matrices, rotations)]
+        reference = orthonormalize_rotation(np.mean(reference_votes, axis=0))
+        fitted = [orthonormalize_rotation(reference @ rotation) for rotation in rotations]
+        residuals = [float(np.linalg.norm(fit - matrix, ord="fro")) for fit, matrix in zip(fitted, matrices)]
+        return {
+            "axis": axis,
+            "reference_matrix": reference,
+            "fitted_matrices": fitted,
+            "residuals": residuals,
+            "score": float(np.mean(np.square(residuals))),
+        }
+
+    x0 = initial_axis.astype(np.float64)
+    x0 /= max(np.linalg.norm(x0), 1e-12)
+
+    def objective(x: np.ndarray) -> float:
+        return solve_for_axis(x)["score"]
+
+    best_result = solve_for_axis(x0)
+    for start in [
+        x0,
+        -x0,
+        np.array([1.0, 0.0, 0.0]),
+        np.array([0.0, 1.0, 0.0]),
+        np.array([0.0, 0.0, 1.0]),
+        np.array([1.0, 1.0, 1.0]),
+    ]:
+        result = optimize.minimize(objective, start, method="Nelder-Mead", options={"maxiter": 900, "xatol": 1e-8, "fatol": 1e-10})
+        candidate = solve_for_axis(result.x)
+        if candidate["score"] < best_result["score"]:
+            best_result = candidate
+
+    fitted = best_result["fitted_matrices"]
+    q30 = fitted[0].T @ fitted[1]
+    best_result["angle30_deg"] = float(rotation_angle_deg(q30))
+    best_result["angles_by_step_deg"] = [
+        float(rotation_angle_deg(fitted[0].T @ matrix)) for matrix in fitted
+    ]
+    return best_result
+
+
+def clone_result_for_axis_locked(result: ProcessedMap, locked_matrix: np.ndarray, locked_label: str) -> ProcessedMap:
+    old_matrix = result.orientation_matrix.astype(np.float64)
+    correction = old_matrix.T @ locked_matrix
+    new_vectors = (result.crystal_vectors.astype(np.float64) @ correction).astype(np.float32)
+    new_vectors /= np.linalg.norm(new_vectors, axis=1, keepdims=True) + 1e-12
+
+    original_pc = (result.pc_original_crystal_vector.astype(np.float64) @ correction).astype(np.float32)
+    original_pc /= max(np.linalg.norm(original_pc), 1e-12)
+    refined_pc = (result.pc_refined_crystal_vector.astype(np.float64) @ correction).astype(np.float32)
+    refined_pc /= max(np.linalg.norm(refined_pc), 1e-12)
+    refined_patch = project_vectors_patch(new_vectors, result.crystal_values)
+
+    return ProcessedMap(
+        spec=result.spec,
+        selected_index=result.selected_index,
+        selected_row=result.selected_row,
+        selected_col=result.selected_col,
+        selected_sem_xy=result.selected_sem_xy,
+        selected_aligned_xy=result.selected_aligned_xy,
+        selected_iq=result.selected_iq,
+        selected_ci=result.selected_ci,
+        selected_phase=result.selected_phase,
+        candidate_count=result.candidate_count,
+        pc_original=result.pc_original,
+        pc_refined=result.pc_refined,
+        pc_delta=result.pc_delta,
+        pc_original_xy=result.pc_original_xy,
+        pc_refined_xy=result.pc_refined_xy,
+        pc_original_crystal_vector=original_pc,
+        pc_refined_crystal_vector=refined_pc,
+        base_orientation_variant=result.base_orientation_variant,
+        base_orientation_matrix=result.base_orientation_matrix,
+        orientation_variant=locked_label,
+        orientation_matrix=locked_matrix.astype(np.float64),
+        symmetry_name=result.symmetry_name,
+        symmetry_matrix=result.symmetry_matrix,
+        axis_prior_score=result.axis_prior_score,
+        original_score=result.original_score,
+        refined_score=result.refined_score,
+        score_gain=result.score_gain,
+        sem_gray=result.sem_gray,
+        aligned_sem_gray=result.aligned_sem_gray,
+        raw_poly=result.raw_poly,
+        aligned_poly=result.aligned_poly,
+        raw_pattern_display=result.raw_pattern_display,
+        corrected_pattern=result.corrected_pattern,
+        enhanced_pattern=result.enhanced_pattern,
+        band_pattern=result.band_pattern,
+        detector_mask=result.detector_mask,
+        detector_patch=result.detector_patch,
+        original_patch=result.original_patch,
+        refined_patch=refined_patch,
+        crystal_vectors=new_vectors,
+        crystal_values=result.crystal_values,
+    )
+
+
+def build_axis_locked_results(results: list[ProcessedMap], rough_fit: dict[str, Any]) -> tuple[list[ProcessedMap], dict[str, Any]]:
+    matrices = [orthonormalize_rotation(result.orientation_matrix) for result in results]
+    angles = [float(result.spec.angle_deg) for result in results]
+    fit = fit_exact_axis_sequence(matrices, angles, rough_fit["common_axis"])
+    locked_results: list[ProcessedMap] = []
+    for result, matrix in zip(results, fit["fitted_matrices"]):
+        locked_results.append(
+            clone_result_for_axis_locked(
+                result=result,
+                locked_matrix=matrix,
+                locked_label=f"axis_locked_exact_30deg_from_{result.orientation_variant}",
+            )
+        )
+    fit["common_axis"] = fit["axis"]
+    return locked_results, fit
+
+
+def write_axis_locked_summary(path: Path, results: list[ProcessedMap], fit: dict[str, Any]) -> None:
+    rows: list[dict[str, Any]] = []
+    axis = fit["common_axis"]
+    for index, result in enumerate(results):
+        rows.append(
+            {
+                "angle_deg": result.spec.angle_deg,
+                "area": result.spec.area,
+                "orientation_variant": result.orientation_variant,
+                "axis_locked_score": fit["score"],
+                "fit_residual": fit["residuals"][index],
+                "angle_from_reference_deg": fit["angles_by_step_deg"][index],
+                "angle30_deg": fit["angle30_deg"],
+                "axis_x": axis[0],
+                "axis_y": axis[1],
+                "axis_z": axis[2],
+                "pc_refined_sphere_x": result.pc_refined_crystal_vector[0],
+                "pc_refined_sphere_y": result.pc_refined_crystal_vector[1],
+                "pc_refined_sphere_z": result.pc_refined_crystal_vector[2],
+            }
+        )
+    with path.open("w", newline="", encoding="utf-8-sig") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def write_symmetry_summary(path: Path, results: list[ProcessedMap], fit: dict[str, Any]) -> None:
     axis = fit["common_axis"]
     rows: list[dict[str, Any]] = []
@@ -1139,6 +1315,19 @@ def run(args: argparse.Namespace) -> None:
     symmetry_fit = apply_cubic_symmetry_axis_prior_30deg(results)
     write_summary_csv(args.output_dir / "pt_highres_30deg_spherical_calibration_summary.csv", results, selection["selected_ref_xy"])
     write_symmetry_summary(args.output_dir / "pt_highres_30deg_cubic_symmetry_axis_prior_summary.csv", results, symmetry_fit)
+
+    axis_locked_results, axis_locked_fit = build_axis_locked_results(results, symmetry_fit)
+    write_summary_csv(
+        args.output_dir / "pt_highres_axis_locked_30deg_spherical_calibration_summary.csv",
+        axis_locked_results,
+        selection["selected_ref_xy"],
+    )
+    write_axis_locked_summary(
+        args.output_dir / "pt_highres_axis_locked_30deg_axis_summary.csv",
+        axis_locked_results,
+        axis_locked_fit,
+    )
+
     save_selection_preview(args.output_dir / "pt_highres_same_point_selection.png", results, selection["selected_ref_xy"])
     save_kikuchi_pc_patterns(args.output_dir / "pt_highres_selected_kikuchi_pc_patterns.png", results)
     save_process_overview(args.output_dir / "pt_highres_spherical_calibration_workflow.png", results, master_texture)
@@ -1146,12 +1335,40 @@ def run(args: argparse.Namespace) -> None:
     save_same_sphere_3d(args.output_dir / "pt_highres_same_sphere_3d.png", results, master_samplers, symmetry_fit)
     save_pc_anchor_lon_colat(args.output_dir / "pt_highres_pc_anchor_lon_colat.png", results, master_texture)
     save_pc_anchor_3d(args.output_dir / "pt_highres_pc_anchor_3d.png", results, master_samplers, symmetry_fit)
+    save_same_sphere_lon_colat(
+        args.output_dir / "pt_highres_axis_locked_same_sphere_lon_colat.png",
+        axis_locked_results,
+        master_texture,
+    )
+    save_same_sphere_3d(
+        args.output_dir / "pt_highres_axis_locked_same_sphere_3d.png",
+        axis_locked_results,
+        master_samplers,
+        axis_locked_fit,
+    )
+    save_pc_anchor_lon_colat(
+        args.output_dir / "pt_highres_axis_locked_pc_anchor_lon_colat.png",
+        axis_locked_results,
+        master_texture,
+    )
+    save_pc_anchor_3d(
+        args.output_dir / "pt_highres_axis_locked_pc_anchor_3d.png",
+        axis_locked_results,
+        master_samplers,
+        axis_locked_fit,
+    )
 
     print(f"Saved outputs to {args.output_dir}")
     print(
         "High-res 30-degree cubic axis prior: "
         f"score={symmetry_fit['score']:.5f}, angle30={symmetry_fit['angle30_deg']:.2f}, "
         f"axis={tuple(round(float(x), 5) for x in symmetry_fit['common_axis'])}"
+    )
+    print(
+        "Axis-locked exact 30-degree sequence: "
+        f"score={axis_locked_fit['score']:.5f}, angle30={axis_locked_fit['angle30_deg']:.2f}, "
+        f"axis={tuple(round(float(x), 5) for x in axis_locked_fit['common_axis'])}, "
+        f"max_residual={max(axis_locked_fit['residuals']):.4f}"
     )
     print(f"Selected common reference SEM point: {selection['selected_ref_xy']}, candidates={selection['candidate_count']}")
     for pair in pair_rows:
