@@ -20,16 +20,20 @@ from project_edax_oim_to_sphere import (
     EdaxMapInputs,
     build_master_lon_colat,
     read_edax_inputs,
+    sample_master,
 )
 from single_kikuchi_pc_finetune import (
     build_master_samplers,
     build_preprocessed_images,
     centered_circular_detector_mask,
     choose_orientation_matrix,
+    make_stride_indices,
     pc_finetune,
     project_crystal_patch,
     project_detector_patch,
+    score_with_directions,
     write_pc_scores,
+    zscore,
 )
 from pt3_same_face_spherical_calibration import (
     ProcessedMap,
@@ -918,6 +922,17 @@ def clone_result_for_axis_locked(
     )
 
 
+def clone_results_for_symmetry_diagnostic(results: list[ProcessedMap]) -> list[ProcessedMap]:
+    return [
+        clone_result_for_axis_locked(
+            result=result,
+            locked_matrix=orthonormalize_rotation(result.orientation_matrix),
+            locked_label=result.orientation_variant,
+        )
+        for result in results
+    ]
+
+
 def build_axis_locked_results(results: list[ProcessedMap], rough_fit: dict[str, Any]) -> tuple[list[ProcessedMap], dict[str, Any]]:
     matrices = [orthonormalize_rotation(result.orientation_matrix) for result in results]
     angles = [float(result.spec.angle_deg) for result in results]
@@ -1178,14 +1193,19 @@ def save_process_overview(path: Path, results: list[ProcessedMap], master_textur
         axes[row, 3].imshow(master_texture, cmap="gray", origin="upper", extent=[-180, 180, 180, 0], aspect="auto")
         imshow_sphere(axes[row, 3], result.original_patch[0], result.original_patch[1], "H5 orientation\nbefore symmetry")
         axes[row, 4].imshow(master_texture, cmap="gray", origin="upper", extent=[-180, 180, 180, 0], aspect="auto")
-        imshow_sphere(axes[row, 4], result.refined_patch[0], result.refined_patch[1], "cubic symmetry\nsphere placement")
+        imshow_sphere(axes[row, 4], result.refined_patch[0], result.refined_patch[1], "refined PC\nsphere placement")
     fig.suptitle("Pt high-resolution 30-degree sequence: SEM alignment, Kikuchi preprocessing, sphere projection")
     fig.tight_layout(rect=[0, 0, 1, 0.985])
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
 
 
-def save_same_sphere_lon_colat(path: Path, results: list[ProcessedMap], master_texture: np.ndarray) -> None:
+def save_same_sphere_lon_colat(
+    path: Path,
+    results: list[ProcessedMap],
+    master_texture: np.ndarray,
+    title: str = "Twelve selected Kikuchi patterns in detector-validated spherical matching coordinates",
+) -> None:
     master_display = normalize_values(master_texture, np.isfinite(master_texture), low=0.5, high=99.5)
     fig, ax = plt.subplots(figsize=(15.5, 7.5), dpi=230)
     ax.imshow(master_display, cmap="gray", origin="upper", extent=[-180, 180, 180, 0], aspect="auto", alpha=0.72)
@@ -1196,7 +1216,7 @@ def save_same_sphere_lon_colat(path: Path, results: list[ProcessedMap], master_t
         ax.contour(lon_grid, colat_grid, result.refined_patch[1].astype(float), levels=[0.5], colors=[result.spec.color], linewidths=0.95)
         lon, colat = vector_to_lon_colat_deg(result.pc_refined_crystal_vector)
         ax.scatter([lon], [colat], s=42, facecolors=result.spec.color, edgecolors="white", linewidths=0.8, zorder=5)
-    ax.set_title("Twelve selected Kikuchi patterns after cubic-symmetry placement on one master sphere")
+    ax.set_title(title)
     ax.set_xlabel("longitude (deg)")
     ax.set_ylabel("colatitude (deg)")
     ax.set_xlim(-180, 180)
@@ -1283,7 +1303,13 @@ def save_pc_anchor_3d(path: Path, results: list[ProcessedMap], master_samplers, 
     plt.close(fig)
 
 
-def save_same_sphere_3d(path: Path, results: list[ProcessedMap], master_samplers, symmetry_fit: dict[str, Any]) -> None:
+def save_same_sphere_3d(
+    path: Path,
+    results: list[ProcessedMap],
+    master_samplers,
+    symmetry_fit: dict[str, Any],
+    suptitle: str = "All high-resolution 30-degree Kikuchi patterns on one master sphere",
+) -> None:
     surface_data = same_sphere_composite_surface(results, master_samplers)
     axis = symmetry_fit["common_axis"].astype(np.float64)
     reference_center = np.mean([np.mean(result.crystal_vectors.astype(np.float64), axis=0) for result in results], axis=0)
@@ -1299,33 +1325,177 @@ def save_same_sphere_3d(path: Path, results: list[ProcessedMap], master_samplers
     for index, (title, view_vector) in enumerate(views, start=1):
         ax = fig.add_subplot(2, 2, index, projection="3d")
         render_same_sphere_view(ax, surface_data, title=title, view_vector=view_vector, axis=axis)
-    fig.suptitle("All high-resolution 30-degree Kikuchi patterns after cubic-symmetry placement on one master sphere")
+    fig.suptitle(suptitle)
     fig.tight_layout(rect=[0, 0, 1, 0.955])
     fig.savefig(path, bbox_inches="tight", transparent=True)
     plt.close(fig)
 
 
-def save_highres_clear_front_views(path: Path, results: list[ProcessedMap], master_samplers, output_dir: Path) -> None:
+def save_highres_clear_front_views(
+    path: Path,
+    results: list[ProcessedMap],
+    master_samplers,
+    output_dir: Path,
+    placement_label: str,
+    suptitle: str,
+    individual_prefix: str,
+) -> None:
     fig, axes = plt.subplots(3, 4, figsize=(18, 13), dpi=220)
     for ax, result in zip(axes.ravel(), results):
         image = render_front_sphere_view(result, master_samplers, size=1300)
         ax.imshow(image)
         ax.set_title(
-            f"{result.spec.angle_deg} deg cubic-symmetry placement\n"
+            f"{result.spec.angle_deg} deg {placement_label}\n"
             f"sym={result.symmetry_name}, score={result.refined_score:+.4f}",
             fontsize=9,
         )
         ax.axis("off")
 
         individual = render_front_pattern_only(result, size=1300)
-        plt.imsave(output_dir / f"pt_highres_front_pattern_{result.spec.angle_deg:03d}.png", individual)
-    fig.suptitle(
-        "High-resolution 30-degree Kikuchi patterns: clear front views after cubic-symmetry placement",
-        fontsize=15,
-    )
+        plt.imsave(output_dir / f"{individual_prefix}_{result.spec.angle_deg:03d}.png", individual)
+    fig.suptitle(suptitle, fontsize=15)
     fig.tight_layout(rect=[0, 0, 1, 0.955])
     fig.savefig(path, bbox_inches="tight", transparent=True)
     plt.close(fig)
+
+
+def master_detector_images(
+    projection,
+    pc: tuple[float, float, float],
+    matrix: np.ndarray,
+    mask: np.ndarray,
+    master_samplers,
+) -> tuple[np.ndarray, np.ndarray]:
+    indices = np.flatnonzero(mask.ravel()).astype(np.int64)
+    directions = detector_directions_with_pc(projection, pc)
+    vectors = directions[indices] @ matrix
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True) + 1e-12
+
+    corrected = np.full(mask.size, np.nan, dtype=np.float32)
+    band = np.full(mask.size, np.nan, dtype=np.float32)
+    corrected[indices] = sample_master(vectors, master_samplers.upper_corrected, master_samplers.lower_corrected)
+    band[indices] = sample_master(vectors, master_samplers.upper_band, master_samplers.lower_band)
+    return corrected.reshape(mask.shape), band.reshape(mask.shape)
+
+
+def score_detector_matrix(
+    projection,
+    pc: tuple[float, float, float],
+    matrix: np.ndarray,
+    mask: np.ndarray,
+    images: dict[str, np.ndarray],
+    master_samplers,
+    args: argparse.Namespace,
+) -> tuple[float, float, float]:
+    indices = make_stride_indices(mask, args.stride)
+    directions = detector_directions_with_pc(projection, pc)
+    return score_with_directions(
+        detector_directions=directions,
+        matrix=matrix,
+        indices=indices,
+        exp_corrected_values=images["enhanced"].ravel()[indices],
+        exp_band_values=images["band"].ravel()[indices],
+        samplers=master_samplers,
+        intensity_weight=args.intensity_weight,
+        band_weight=args.band_weight,
+    )
+
+
+def residual_image(experimental: np.ndarray, simulated: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    residual = np.full(mask.shape, np.nan, dtype=np.float32)
+    valid = mask & np.isfinite(simulated)
+    if np.any(valid):
+        residual[valid] = zscore(experimental[valid]) - zscore(simulated[valid])
+    return residual
+
+
+def save_forward_detector_validation(
+    path: Path,
+    csv_path: Path,
+    results: list[ProcessedMap],
+    h5_path: Path,
+    up2_root: Path,
+    master_samplers,
+    args: argparse.Namespace,
+) -> None:
+    rows: list[dict[str, Any]] = []
+    fig, axes = plt.subplots(len(results), 5, figsize=(15.2, 2.45 * len(results)), dpi=160)
+    for row, result in enumerate(results):
+        projection = read_edax_inputs(
+            EdaxMapInputs(
+                h5_path=h5_path,
+                up2_path=up2_root / result.spec.up2_name,
+                map_group=result.spec.h5_group,
+                pattern_index=result.selected_index,
+            )
+        )
+        mask, _circle = centered_circular_detector_mask(projection.pattern.shape, args.mask_radius_fraction)
+        images = build_preprocessed_images(projection.pattern, mask)
+
+        base_score = score_detector_matrix(
+            projection=projection,
+            pc=result.pc_refined,
+            matrix=result.base_orientation_matrix,
+            mask=mask,
+            images=images,
+            master_samplers=master_samplers,
+            args=args,
+        )
+        placed_score = score_detector_matrix(
+            projection=projection,
+            pc=result.pc_refined,
+            matrix=result.orientation_matrix,
+            mask=mask,
+            images=images,
+            master_samplers=master_samplers,
+            args=args,
+        )
+        base_corr, _base_band = master_detector_images(projection, result.pc_refined, result.base_orientation_matrix, mask, master_samplers)
+        placed_corr, _placed_band = master_detector_images(projection, result.pc_refined, result.orientation_matrix, mask, master_samplers)
+        base_residual = residual_image(images["enhanced"], base_corr, mask)
+        placed_residual = residual_image(images["enhanced"], placed_corr, mask)
+
+        panels = [
+            (masked_image(images["enhanced"], mask), "Experimental enhanced", "gray", 0.0, 1.0),
+            (normalize_values(base_corr, mask & np.isfinite(base_corr), low=0.5, high=99.5), f"Master on detector\nbase score={base_score[2]:+.4f}", "gray", 0.0, 1.0),
+            (base_residual, "Base residual", "coolwarm", -2.5, 2.5),
+            (normalize_values(placed_corr, mask & np.isfinite(placed_corr), low=0.5, high=99.5), f"Master on detector\ncubic score={placed_score[2]:+.4f}", "gray", 0.0, 1.0),
+            (placed_residual, "Cubic residual", "coolwarm", -2.5, 2.5),
+        ]
+        for col, (image, title, cmap, vmin, vmax) in enumerate(panels):
+            ax = axes[row, col]
+            ax.imshow(image, cmap=cmap, vmin=vmin, vmax=vmax)
+            if col == 0:
+                ax.set_ylabel(f"{result.spec.angle_deg} deg\nidx={result.selected_index}", fontsize=8)
+            ax.set_title(title, fontsize=8)
+            ax.axis("off")
+
+        rows.append(
+            {
+                "angle_deg": result.spec.angle_deg,
+                "area": result.spec.area,
+                "selected_index": result.selected_index,
+                "base_orientation_variant": result.base_orientation_variant,
+                "selected_cubic_symmetry": result.symmetry_name,
+                "base_intensity_score": base_score[0],
+                "base_band_score": base_score[1],
+                "base_combined_score": base_score[2],
+                "cubic_intensity_score": placed_score[0],
+                "cubic_band_score": placed_score[1],
+                "cubic_combined_score": placed_score[2],
+                "cubic_minus_base": placed_score[2] - base_score[2],
+            }
+        )
+
+    fig.suptitle("Forward detector validation: old sphere-matching check, master sampled back to EBSD detector pixels")
+    fig.tight_layout(rect=[0, 0, 1, 0.985])
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def save_transforms_npz(path: Path, transforms: list[np.ndarray]) -> None:
@@ -1377,12 +1547,28 @@ def run(args: argparse.Namespace) -> None:
         if index == 0 and args.orientation_mode == "reference_variant":
             fixed_orientation_variant = result.base_orientation_variant
 
-    symmetry_fit = apply_cubic_symmetry_axis_prior_30deg(results)
-    write_summary_csv(args.output_dir / "pt_highres_30deg_spherical_calibration_summary.csv", results, selection["selected_ref_xy"])
-    write_symmetry_summary(args.output_dir / "pt_highres_30deg_cubic_symmetry_axis_prior_summary.csv", results, symmetry_fit)
+    matching_results = results
+    symmetry_results = clone_results_for_symmetry_diagnostic(matching_results)
+    symmetry_fit = apply_cubic_symmetry_axis_prior_30deg(symmetry_results)
+    write_summary_csv(args.output_dir / "pt_highres_30deg_spherical_calibration_summary.csv", matching_results, selection["selected_ref_xy"])
+    write_summary_csv(
+        args.output_dir / "pt_highres_30deg_cubic_symmetry_placement_summary.csv",
+        symmetry_results,
+        selection["selected_ref_xy"],
+    )
+    write_symmetry_summary(args.output_dir / "pt_highres_30deg_cubic_symmetry_axis_prior_summary.csv", symmetry_results, symmetry_fit)
+    save_forward_detector_validation(
+        args.output_dir / "pt_highres_forward_detector_validation.png",
+        args.output_dir / "pt_highres_forward_detector_validation_scores.csv",
+        symmetry_results,
+        args.h5,
+        args.up2_root,
+        master_samplers,
+        args,
+    )
 
     if args.save_geometric_axis_locked:
-        axis_locked_results, axis_locked_fit = build_axis_locked_results(results, symmetry_fit)
+        axis_locked_results, axis_locked_fit = build_axis_locked_results(symmetry_results, symmetry_fit)
         write_summary_csv(
             args.output_dir / "pt_highres_geometric_axis_locked_30deg_spherical_calibration_summary.csv",
             axis_locked_results,
@@ -1394,24 +1580,63 @@ def run(args: argparse.Namespace) -> None:
             axis_locked_fit,
         )
 
-    save_selection_preview(args.output_dir / "pt_highres_same_point_selection.png", results, selection["selected_ref_xy"])
-    save_kikuchi_pc_patterns(args.output_dir / "pt_highres_selected_kikuchi_pc_patterns.png", results)
-    save_process_overview(args.output_dir / "pt_highres_spherical_calibration_workflow.png", results, master_texture)
-    save_same_sphere_lon_colat(args.output_dir / "pt_highres_same_sphere_lon_colat.png", results, master_texture)
-    save_same_sphere_3d(args.output_dir / "pt_highres_same_sphere_3d.png", results, master_samplers, symmetry_fit)
+    save_selection_preview(args.output_dir / "pt_highres_same_point_selection.png", matching_results, selection["selected_ref_xy"])
+    save_kikuchi_pc_patterns(args.output_dir / "pt_highres_selected_kikuchi_pc_patterns.png", matching_results)
+    save_process_overview(args.output_dir / "pt_highres_spherical_calibration_workflow.png", matching_results, master_texture)
+    save_same_sphere_lon_colat(
+        args.output_dir / "pt_highres_same_sphere_lon_colat.png",
+        matching_results,
+        master_texture,
+        title="Detector-validated spherical matching placements on one master sphere",
+    )
+    save_same_sphere_3d(
+        args.output_dir / "pt_highres_same_sphere_3d.png",
+        matching_results,
+        master_samplers,
+        symmetry_fit,
+        suptitle="Detector-validated spherical matching placements on one master sphere",
+    )
+    save_same_sphere_lon_colat(
+        args.output_dir / "pt_highres_cubic_symmetry_same_sphere_lon_colat.png",
+        symmetry_results,
+        master_texture,
+        title="Cubic-symmetry diagnostic placements on one master sphere",
+    )
+    save_same_sphere_3d(
+        args.output_dir / "pt_highres_cubic_symmetry_same_sphere_3d.png",
+        symmetry_results,
+        master_samplers,
+        symmetry_fit,
+        suptitle="Cubic-symmetry diagnostic placements on one master sphere",
+    )
     save_highres_clear_front_views(
-        args.output_dir / "pt_highres_cubic_symmetry_front_views.png",
-        results,
+        args.output_dir / "pt_highres_sphere_matching_front_views.png",
+        matching_results,
         master_samplers,
         args.output_dir,
+        placement_label="sphere match",
+        suptitle="High-resolution 30-degree Kikuchi patterns: detector-validated sphere-matching front views",
+        individual_prefix="pt_highres_sphere_match_front_pattern",
     )
-    save_pc_anchor_lon_colat(args.output_dir / "pt_highres_pc_anchor_lon_colat.png", results, master_texture)
-    save_pc_anchor_3d(args.output_dir / "pt_highres_pc_anchor_3d.png", results, master_samplers, symmetry_fit)
+    save_highres_clear_front_views(
+        args.output_dir / "pt_highres_cubic_symmetry_front_views.png",
+        symmetry_results,
+        master_samplers,
+        args.output_dir,
+        placement_label="cubic-symmetry diagnostic",
+        suptitle="High-resolution 30-degree Kikuchi patterns: cubic-symmetry diagnostic front views",
+        individual_prefix="pt_highres_cubic_front_pattern",
+    )
+    save_pc_anchor_lon_colat(args.output_dir / "pt_highres_pc_anchor_lon_colat.png", matching_results, master_texture)
+    save_pc_anchor_3d(args.output_dir / "pt_highres_pc_anchor_3d.png", matching_results, master_samplers, symmetry_fit)
+    save_pc_anchor_lon_colat(args.output_dir / "pt_highres_cubic_symmetry_pc_anchor_lon_colat.png", symmetry_results, master_texture)
+    save_pc_anchor_3d(args.output_dir / "pt_highres_cubic_symmetry_pc_anchor_3d.png", symmetry_results, master_samplers, symmetry_fit)
     if args.save_geometric_axis_locked:
         save_same_sphere_lon_colat(
             args.output_dir / "pt_highres_geometric_axis_locked_same_sphere_lon_colat.png",
             axis_locked_results,
             master_texture,
+            title="Geometric exact-30-degree diagnostic placements on one master sphere",
         )
         save_same_sphere_3d(
             args.output_dir / "pt_highres_geometric_axis_locked_same_sphere_3d.png",
@@ -1443,11 +1668,18 @@ def run(args: argparse.Namespace) -> None:
             f"align {pair.moving_angle:03d}->{pair.fixed_angle:03d}: "
             f"rot={pair.initial_rotation_deg:+.1f}, {pair.inliers}/{pair.matches} inliers, rmse={pair.residual_rmse:.2f}, {pair.method}"
         )
-    for result in results:
+    print("Detector-validated sphere matching placements:")
+    for result in matching_results:
         print(
             f"{result.spec.angle_deg:03d}: idx={result.selected_index}, IQ={result.selected_iq:.1f}, CI={result.selected_ci:.3f}, "
             f"sym={result.symmetry_name}, PC {tuple(round(x, 6) for x in result.pc_original)} -> "
             f"{tuple(round(x, 6) for x in result.pc_refined)}, score {result.original_score:+.4f}->{result.refined_score:+.4f}"
+        )
+    print("Cubic-symmetry diagnostic placements:")
+    for result in symmetry_results:
+        print(
+            f"{result.spec.angle_deg:03d}: idx={result.selected_index}, sym={result.symmetry_name}, "
+            f"detector-validated score {result.original_score:+.4f}->{result.refined_score:+.4f}"
         )
 
 

@@ -196,13 +196,15 @@
   - 背景扣除、CLAHE 衬度增强；
   - H5/EDAX PC + H5 orientation 投影到 master sphere；
   - 小范围 PC finetune；
-  - 按 Pt-3 的 cubic symmetry axis placement 逻辑选择等价晶体分支；
-  - 同步更新 `orientation_matrix`、`crystal_vectors`、PC anchor 和 `refined_patch`；
-  - 用 4e9e21b 的高清 front-view 思路输出每张 pattern 正对观察视角的球面图；
+  - 用旧的 detector-space forward matching 逻辑验证：把 master sphere 按当前 PC + orientation 采样回 detector 像素，并与实验 pattern 做 NCC/残差对比；
+  - 主球面匹配输出保持 H5 orientation + refined PC，不再被 cubic symmetry 后处理覆盖；
+  - 另开 `symmetry_results` 分支，按 Pt-3 的 cubic symmetry axis placement 逻辑选择等价晶体分支，仅作为共同轴线/对称性诊断；
+  - 用 4e9e21b 的高清 front-view 思路分别输出主匹配和 cubic 诊断的球面正视图；
   - 单独绘制 PC 在 pattern 上的位置和 PC 在 master sphere 上的晶体学锚点。
 - 当前本机运行结果中，SEM 相邻配准全部使用 `lightglue_superpoint`，没有使用 fallback；各对 RANSAC inlier 约 48-81 个，RMSE 约 2.0-2.6 px。
-- 当前固定流程来自 `21dce0a` 和 `4e9e21b`：先做单张 PC/orientation/finetune，再只通过 cubic symmetry 等价分支把多张 pattern 放到同一个 master sphere 坐标解释中，并输出清晰的球面可视化。
+- 当前固定流程来自 `21dce0a` 和 `4e9e21b` 的可视化/对称性思路，但球面匹配本身回到更早的 forward detector validation：最终匹配位置不由 cubic branch 强行改写。
 - 当前 12 组运行的共同 SEM 参考点为 `(342.07, 275.83)`；cubic symmetry placement 诊断为 `score=10.73288`、`angle30=22.82°`、共同轴约为 `(0.873, 0.488, -0.017)`。
+- 当前 forward detector validation 表明 cubic branch 不是所有 pattern 的最佳匹配：5/12 张 detector-space 分数低于 base/refined placement，其中 120° 从 `0.03088` 降到 `0.01455`。因此 cubic 输出只作为诊断，不作为最终 sphere matching 结果。
 - 输出：
   - `pt_highres_sem_lightglue_alignment_overview.png`
   - `pt_highres_same_point_selection.png`
@@ -212,10 +214,19 @@
   - `pt_highres_same_sphere_3d.png`
   - `pt_highres_pc_anchor_lon_colat.png`
   - `pt_highres_pc_anchor_3d.png`
+  - `pt_highres_sphere_matching_front_views.png`
+  - `pt_highres_sphere_match_front_pattern_000.png` 到 `pt_highres_sphere_match_front_pattern_330.png`
+  - `pt_highres_forward_detector_validation.png`
+  - `pt_highres_forward_detector_validation_scores.csv`
+  - `pt_highres_cubic_symmetry_same_sphere_lon_colat.png`
+  - `pt_highres_cubic_symmetry_same_sphere_3d.png`
+  - `pt_highres_cubic_symmetry_pc_anchor_lon_colat.png`
+  - `pt_highres_cubic_symmetry_pc_anchor_3d.png`
   - `pt_highres_cubic_symmetry_front_views.png`
-  - `pt_highres_front_pattern_000.png` 到 `pt_highres_front_pattern_330.png`
+  - `pt_highres_cubic_front_pattern_000.png` 到 `pt_highres_cubic_front_pattern_330.png`
   - `pt_highres_pair_alignments.csv`
   - `pt_highres_30deg_spherical_calibration_summary.csv`
+  - `pt_highres_30deg_cubic_symmetry_placement_summary.csv`
   - `pt_highres_30deg_cubic_symmetry_axis_prior_summary.csv`
   - `pt_highres_sem_transforms_raw_to_angle0.npz`
 
@@ -380,14 +391,22 @@ D:\anaconda3\envs\torch\python.exe .\pt_highres_30deg_lightglue_calibration.py `
 
 ### 2026-07-06
 
-- 将 `pt_highres_30deg_lightglue_calibration.py` 固定回 Pt-3 的 cubic symmetry axis placement 路线。
-- 该流程保留 LightGlue/SuperPoint 的 12 组 SEM 对齐和同一物理点选择；每张 Kikuchi 先单独完成 EDAX PC + H5 orientation + PC finetune，再用 cubic symmetry 选择等价晶体分支。
+- 修正 `pt_highres_30deg_lightglue_calibration.py` 的球面匹配输出：以前的真正匹配判断是 detector-space forward validation，即把 master sphere 按 PC + orientation 采样回 detector 像素并与实验 pattern 计算 NCC/残差。
+- 将 12 组 Pt high-resolution 流程拆成两条分支：主 `matching_results` 保持 H5 orientation + PC finetune，不再被 cubic symmetry 改写；`symmetry_results` 是克隆后的 cubic symmetry axis diagnostic。
+- 新增 `pt_highres_forward_detector_validation.png` 和 `pt_highres_forward_detector_validation_scores.csv`，同时比较 base/refined placement 与 cubic diagnostic placement。当前结果显示 5/12 张 cubic placement 的 detector-space 分数变差，120° 下降最明显，所以 cubic branch 不能当作最终匹配输出。
+- 新增主匹配高清输出 `pt_highres_sphere_matching_front_views.png` 和 `pt_highres_sphere_match_front_pattern_000.png` 到 `pt_highres_sphere_match_front_pattern_330.png`；保留 `pt_highres_cubic_symmetry_*` 作为单独诊断输出。
+- `pt_highres_30deg_lightglue_calibration.py` 保留 Pt-3 的 cubic symmetry axis placement 思路，但现在只在克隆分支中作为诊断路线使用。
+- 该流程保留 LightGlue/SuperPoint 的 12 组 SEM 对齐和同一物理点选择；每张 Kikuchi 先单独完成 EDAX PC + H5 orientation + PC finetune，再在诊断分支中用 cubic symmetry 选择等价晶体分支。
 - 移除默认的 fixed-placement residual 路线和 match-preserving 连续旋转优化，避免和 Pt-3 固定流程混在一起。
-- 新增 12 张高清正视球面图和总览 contact sheet，采用 4e9e21b 中的 front-view rasterization 方式。
+- 新增主匹配和 cubic 诊断两套高清正视球面图，采用 4e9e21b 中的 front-view rasterization 方式。
 - 已用 12 组 Pt high-resolution 数据跑通：共同参考点 `(342.07, 275.83)`，12 张图均有对应 raw EBSD index，当前 cubic symmetry placement 的 `angle30=22.82°`。
 - 新增本地输出：
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_sphere_matching_front_views.png`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_sphere_match_front_pattern_000.png` 到 `pt_highres_sphere_match_front_pattern_330.png`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_forward_detector_validation.png`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_forward_detector_validation_scores.csv`
   - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_cubic_symmetry_front_views.png`
-  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_front_pattern_000.png` 到 `pt_highres_front_pattern_330.png`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_cubic_front_pattern_000.png` 到 `pt_highres_cubic_front_pattern_330.png`
 
 ### 2026-07-04
 
