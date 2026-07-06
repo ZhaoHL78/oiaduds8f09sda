@@ -196,12 +196,13 @@
   - 背景扣除、CLAHE 衬度增强；
   - H5/EDAX PC + H5 orientation 投影到 master sphere；
   - 小范围 PC finetune；
-  - cubic symmetry 等价落点选择，使 12 张 pattern 尽量满足共同 30° 轴线关系；
+  - cubic symmetry 等价落点选择，作为不破坏单张 pattern/master sphere 贴合的自由落点诊断；
+  - 用 match-preserving 30° physical sequence 在保持 Kikuchi/master sphere 匹配分数的条件下反解共同旋转轴；
   - 单独绘制 PC 在 pattern 上的位置和 PC 在 master sphere 上的晶体学锚点。
 - 当前本机运行结果中，SEM 相邻配准全部使用 `lightglue_superpoint`，没有使用 fallback；各对 RANSAC inlier 约 48-81 个，RMSE 约 2.0-2.6 px。
 - 一个重要诊断结果：在 H5 orientation + cubic symmetry 等价落点下，最优共同轴的 `Q30` 约为 `22.82°`，不是理想 30°。这说明 SEM 物理旋转成立，但软件 orientation / PC / 坐标链映射到标准球面后仍存在需要继续解释的几何偏差。
-- 新增 axis-locked 解法：先用 H5 orientation + cubic symmetry 作为初值，再拟合一个精确的 `F_k = F_0 R_axis(k * 30°)` 序列。该解法把“样品每次绕同一 in-plane 轴旋转 30°”作为硬物理先验，用于反解真实 orientation 序列和 PC 球面锚点。
-- 当前 axis-locked 结果给出 `Q30 = 30.00°`，拟合轴约为 `(0.837, 0.526, 0.150)`，相对 H5+cubic 初值的最大 Frobenius residual 约为 `1.37`。PC 锚点在 3D master sphere 上形成清楚的环形序列。
+- 旧的 geometric exact-30 axis lock 只作为初始化/诊断：它能让 `Q30 = 30.00°`，但会明显牺牲 pattern 与 master sphere 的贴合，因此默认不再作为最终输出。
+- 当前最终采用 match-preserving 30° physical sequence：在 `F_k = F_0 R_axis(k * 30°)` 物理关系下直接优化 master sphere 查询分数，并用 H5+cubic 自由落点作小权重先验。当前结果 `accepted=True`，`Q30 = 30.00°`，拟合轴约为 `(0.832, 0.535, 0.147)`，自由落点平均分数 `+0.01875`，物理序列平均分数 `+0.02566`，没有为了 30° 条件硬破坏 Kikuchi/master sphere 匹配。
 - 输出：
   - `pt_highres_sem_lightglue_alignment_overview.png`
   - `pt_highres_same_point_selection.png`
@@ -211,15 +212,15 @@
   - `pt_highres_same_sphere_3d.png`
   - `pt_highres_pc_anchor_lon_colat.png`
   - `pt_highres_pc_anchor_3d.png`
-  - `pt_highres_axis_locked_same_sphere_lon_colat.png`
-  - `pt_highres_axis_locked_same_sphere_3d.png`
-  - `pt_highres_axis_locked_pc_anchor_lon_colat.png`
-  - `pt_highres_axis_locked_pc_anchor_3d.png`
+  - `pt_highres_match_preserving_same_sphere_lon_colat.png`
+  - `pt_highres_match_preserving_same_sphere_3d.png`
+  - `pt_highres_match_preserving_pc_anchor_lon_colat.png`
+  - `pt_highres_match_preserving_pc_anchor_3d.png`
   - `pt_highres_pair_alignments.csv`
   - `pt_highres_30deg_spherical_calibration_summary.csv`
   - `pt_highres_30deg_cubic_symmetry_axis_prior_summary.csv`
-  - `pt_highres_axis_locked_30deg_spherical_calibration_summary.csv`
-  - `pt_highres_axis_locked_30deg_axis_summary.csv`
+  - `pt_highres_match_preserving_30deg_spherical_calibration_summary.csv`
+  - `pt_highres_match_preserving_30deg_axis_summary.csv`
   - `pt_highres_sem_transforms_raw_to_angle0.npz`
 
 主要代码：
@@ -383,15 +384,17 @@ D:\anaconda3\envs\torch\python.exe .\pt_highres_30deg_lightglue_calibration.py `
 
 ### 2026-07-06
 
-- 扩展 `pt_highres_30deg_lightglue_calibration.py`，新增 exact 30° axis-locked orientation sequence。
-- 新流程先保留 H5 orientation + cubic symmetry 的自由落点作为诊断，再拟合 `F_k = F_0 R_axis(k * 30°)`，把已知 in-plane 旋转轴作为硬先验反解真实 orientation 序列。
-- 当前 axis-locked 输出中 `Q30 = 30.00°`，PC 锚点在标准 Kikuchi sphere 上呈连续环形分布，用于判断每张 Kikuchi pattern 的晶体学锚点。
+- 扩展 `pt_highres_30deg_lightglue_calibration.py`，新增 match-preserving 30° physical sequence。
+- 新流程先保留 H5 orientation + cubic symmetry 的自由落点作为诊断，再用 `F_k = F_0 R_axis(k * 30°)` 表示 12 张 EBSD 的物理旋转关系；优化目标仍然是 Kikuchi pattern 与 master sphere 的匹配分数，而不是把图像后处理硬排成 30°。
+- 旧的 geometric exact-30 axis lock 保留为初始化/诊断，需要 `--save-geometric-axis-locked` 才会输出；它不再被当作最终结果，因为它可能破坏 pattern 与 master sphere 的贴合。
+- 当前 match-preserving 输出中 `accepted=True`，`Q30 = 30.00°`，轴约为 `(0.832, 0.535, 0.147)`，自由落点平均分数 `+0.01875`，物理序列平均分数 `+0.02566`，PC 锚点在标准 Kikuchi sphere 上呈连续环形分布。
 - 新增本地输出：
-  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_axis_locked_same_sphere_lon_colat.png`
-  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_axis_locked_same_sphere_3d.png`
-  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_axis_locked_pc_anchor_lon_colat.png`
-  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_axis_locked_pc_anchor_3d.png`
-  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_axis_locked_30deg_axis_summary.csv`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_match_preserving_same_sphere_lon_colat.png`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_match_preserving_same_sphere_3d.png`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_match_preserving_pc_anchor_lon_colat.png`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_match_preserving_pc_anchor_3d.png`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_match_preserving_30deg_axis_summary.csv`
+  - `outputs/pt_highres_30deg_lightglue_calibration/pt_highres_match_preserving_30deg_spherical_calibration_summary.csv`
 
 ### 2026-07-04
 
