@@ -244,7 +244,8 @@
   - 默认 mask 为 centered full disk，半径 `0.49 * min(H, W)`；对 470 x 470 的 Pt-3 pattern，对应圆心 `(234, 234)`、半径 `230`，用于覆盖完整 Kikuchi 圆形区域。
   - 可用 `--mask-mode estimated` 调用 Hough 圆检测，但 Pt-3 默认不用它，因为局部强 Kikuchi band 可能让 Hough 偏到错误圆心。
   - 默认 `--pc-initial scan_position`，先根据 EBSD 扫描位置估计电子束作用点造成的 PC 漂移，再以这个 PC 作为局部 finetune 初值。
-  - PC residual finetune 后，固定 refined PC，只搜索一个小角度 residual orientation，默认 `--orientation-bound-deg 3.0`、粗网格 `7^3`、细网格 `9^3`。
+  - PC residual finetune 后，固定 refined PC，只搜索一个高精度小角度 residual orientation，默认 `--orientation-bound-deg 0.5`、`--orientation-step-deg 0.05`，即每轴 `-0.5°` 到 `+0.5°`。
+  - 同时输出顺序诊断：A 路线为 `scan-position PC -> PC residual -> orientation residual`，B 路线为 `scan-position PC -> orientation residual -> PC residual`，用于判断 PC 和 orientation 是否在互相代偿。
   - PC residual 和 orientation residual 采用顺序分解：PC residual 先解释 detector ray geometry / pattern center 导致的非刚性投影差异；orientation residual 再解释球面上的整体小角度刚性旋转残差。单张 pattern 中二者不是数学上唯一可分的，因此 summary 同时保存四个阶段 score 供人工判断。
   - 不做 cubic symmetry/axis placement；这是 detector-validated 的单张球面匹配校准流程。
 - 当前默认运行在本机 Pt-3 数据上匹配到 5 个 mapping，并输出 5 张详细 stage-wise 校准图。5 张均选择 `edax_g_direct_row_major`，PC+orientation score 均高于 map-PC score。
@@ -254,9 +255,12 @@
   - `pt_kikuchi_spherical_calibration_summary.md`
   - `per_pattern/<pattern_key>/<pattern_key>_spherical_calibration_overview.png`
   - `per_pattern/<pattern_key>/<pattern_key>_position_pc_orientation_finetune.png`
+  - `per_pattern/<pattern_key>/<pattern_key>_pc_orientation_order_comparison.png`
   - `per_pattern/<pattern_key>/orientation_scores.csv`
   - `per_pattern/<pattern_key>/pc_finetune_scores.csv`
   - `per_pattern/<pattern_key>/orientation_finetune_trace.csv`
+  - `per_pattern/<pattern_key>/orientation_before_pc_trace.csv`
+  - `per_pattern/<pattern_key>/pc_after_orientation_finetune_scores.csv`
   - `per_pattern/<pattern_key>/single_kikuchi_pc_finetune_summary.csv`
 
 主要代码：
@@ -436,13 +440,15 @@ D:\anaconda3\envs\torch\python.exe .\batch_pt_kikuchi_spherical_calibration.py `
 - 已在本机 Pt-3 数据上跑通 5 张 Kikuchi：`Area 3-0 idx=9879`、`Area 3-90 idx=6088`、`Area 3-180 idx=75009`、`Area 3-270 idx=18635`、`Area 3-360 idx=68376`。5 张均自动选择 `edax_g_direct_row_major`，PC+orientation score 均高于 map-PC score。
 - 修正 Pt 批处理默认 mask：由偏小的保守圆改为完整 centered Kikuchi disk，默认半径 `0.49 * min(H, W)`，本机 470 x 470 Pt pattern 为 `(cx=234, cy=234, r=230)`。
 - 更新 Pt 批处理 finetune 顺序：先用 scan position 对 PC 做确定性初值校正，再做残余 PC finetune，最后在 refined PC 固定后做小角度 residual orientation finetune。
-- 将 residual orientation 默认搜索范围从 `±1.2°` 放大到 `±3.0°`，粗搜索改为 `7^3`，细搜索改为 `9^3`，便于检查 PC 校正后是否仍有真实取向残差。
+- 将 residual orientation 默认搜索改为高精度小范围：每轴 `-0.5°` 到 `+0.5°`、步长 `0.05°`，避免 orientation 用过大的自由度代偿 PC 误差。
+- 新增 PC/orientation 残差顺序诊断：同时比较 `scan PC -> PC residual -> orientation residual` 与 `scan PC -> orientation residual -> PC residual`，并输出 `*_pc_orientation_order_comparison.png`。
 - 新增 `*_position_pc_orientation_finetune.png` 和 `orientation_finetune_trace.csv`，可视化 map PC、scan-position PC、residual PC、PC+orientation 四个阶段的球面位置和 score 变化。
 - 新增本地输出：
   - `outputs/pt_batch_kikuchi_spherical_calibration/pt_kikuchi_spherical_calibration_contact_sheet.png`
   - `outputs/pt_batch_kikuchi_spherical_calibration/pt_kikuchi_spherical_calibration_summary.csv`
   - `outputs/pt_batch_kikuchi_spherical_calibration/per_pattern/*/*_spherical_calibration_overview.png`
   - `outputs/pt_batch_kikuchi_spherical_calibration/per_pattern/*/*_position_pc_orientation_finetune.png`
+  - `outputs/pt_batch_kikuchi_spherical_calibration/per_pattern/*/*_pc_orientation_order_comparison.png`
   - `outputs/pt_batch_kikuchi_spherical_calibration/per_pattern/*/orientation_finetune_trace.csv`
 
 ### 2026-07-06

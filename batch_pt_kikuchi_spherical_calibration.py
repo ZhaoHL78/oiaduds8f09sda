@@ -6,7 +6,8 @@ This is the fixed, reusable version of the single-pattern workflow:
 2. select high-IQ/high-CI Kikuchi patterns;
 3. run full-disk preprocessing, scan-position PC correction, residual PC finetune,
    and residual orientation finetune;
-4. save one detailed stage-wise visualization per pattern plus summary sheets.
+4. compare PC-then-orientation and orientation-then-PC residual ordering;
+5. save detailed stage-wise visualizations per pattern plus summary sheets.
 """
 
 from __future__ import annotations
@@ -185,6 +186,38 @@ def score_orientation_matrix(
     )
 
 
+def score_orientation_matrix_precomputed(
+    detector_directions: np.ndarray,
+    matrix: np.ndarray,
+    indices: np.ndarray,
+    exp_corrected_values: np.ndarray,
+    exp_band_values: np.ndarray,
+    samplers,
+    args: argparse.Namespace,
+) -> tuple[float, float, float]:
+    return score_with_directions(
+        detector_directions=detector_directions,
+        matrix=matrix,
+        indices=indices,
+        exp_corrected_values=exp_corrected_values,
+        exp_band_values=exp_band_values,
+        samplers=samplers,
+        intensity_weight=args.intensity_weight,
+        band_weight=args.band_weight,
+    )
+
+
+def orientation_grid_offsets(args: argparse.Namespace) -> np.ndarray | None:
+    step = float(getattr(args, "orientation_step_deg", 0.0))
+    bound = float(args.orientation_bound_deg)
+    if step <= 0.0 or bound <= 0.0:
+        return None
+    count = int(round((2.0 * bound) / step)) + 1
+    offsets = np.linspace(-bound, bound, count, dtype=np.float64)
+    offsets[np.abs(offsets) < 0.5 * step] = 0.0
+    return offsets
+
+
 def orientation_finetune(
     projection,
     pc: tuple[float, float, float],
@@ -194,7 +227,19 @@ def orientation_finetune(
     samplers,
     args: argparse.Namespace,
 ) -> tuple[np.ndarray, dict[str, float], list[dict[str, float]]]:
-    zero_score = score_orientation_matrix(projection, pc, base_matrix, mask, images, samplers, args)
+    indices = make_stride_indices(mask, args.stride)
+    detector_directions = detector_directions_with_pc(projection, pc)
+    exp_corrected = images["enhanced"].ravel()[indices]
+    exp_band = images["band"].ravel()[indices]
+    zero_score = score_orientation_matrix_precomputed(
+        detector_directions,
+        base_matrix,
+        indices,
+        exp_corrected,
+        exp_band,
+        samplers,
+        args,
+    )
     trace: list[dict[str, float]] = [
         {
             "stage": "initial",
@@ -215,7 +260,15 @@ def orientation_finetune(
     def evaluate(stage: str, rx: float, ry: float, rz: float) -> dict[str, float]:
         delta = rotation_matrix_from_deg(rx, ry, rz)
         matrix = base_matrix @ delta.T
-        intensity, band, combined = score_orientation_matrix(projection, pc, matrix, mask, images, samplers, args)
+        intensity, band, combined = score_orientation_matrix_precomputed(
+            detector_directions,
+            matrix,
+            indices,
+            exp_corrected,
+            exp_band,
+            samplers,
+            args,
+        )
         if args.orientation_bound_deg > 0:
             penalty = args.orientation_regularization_weight * float(
                 np.mean(np.square(np.array([rx, ry, rz], dtype=np.float64) / args.orientation_bound_deg))
@@ -232,6 +285,20 @@ def orientation_finetune(
             "combined_score": combined,
             "objective": combined - penalty,
         }
+
+    exact_offsets = orientation_grid_offsets(args)
+    if exact_offsets is not None:
+        for rx in exact_offsets:
+            for ry in exact_offsets:
+                for rz in exact_offsets:
+                    if rx == 0 and ry == 0 and rz == 0:
+                        continue
+                    row = evaluate("orientation_grid", float(rx), float(ry), float(rz))
+                    trace.append(row)
+                    if row["objective"] > best["objective"]:
+                        best = row.copy()
+        best_delta = rotation_matrix_from_deg(best["rot_x_deg"], best["rot_y_deg"], best["rot_z_deg"])
+        return base_matrix @ best_delta.T, best, trace
 
     coarse_offsets = np.linspace(-args.orientation_bound_deg, args.orientation_bound_deg, args.orientation_steps)
     for rx in coarse_offsets:
@@ -512,6 +579,126 @@ def save_position_pc_orientation_visualization(
     plt.close(fig)
 
 
+def norm3(values: tuple[float, float, float] | list[float] | np.ndarray) -> float:
+    return float(np.linalg.norm(np.asarray(values, dtype=np.float64)))
+
+
+def save_order_comparison_visualization(
+    path: Path,
+    projection,
+    images: dict[str, np.ndarray],
+    mask: np.ndarray,
+    circle: tuple[int, int, int],
+    master_texture: np.ndarray,
+    matrix: np.ndarray,
+    scan_pc: tuple[float, float, float],
+    scan_score: tuple[float, float, float],
+    pc_then_ori_pc: tuple[float, float, float],
+    pc_then_ori_matrix: np.ndarray,
+    pc_then_ori_score: tuple[float, float, float],
+    pc_then_ori_best: dict[str, float],
+    ori_then_pc_pc: tuple[float, float, float],
+    ori_then_pc_matrix: np.ndarray,
+    ori_then_pc_score: tuple[float, float, float],
+    ori_then_pc_best: dict[str, float],
+) -> None:
+    scan_patch = project_crystal_patch(projection, scan_pc, matrix, images["enhanced"], mask)
+    pc_then_ori_patch = project_crystal_patch(projection, pc_then_ori_pc, pc_then_ori_matrix, images["enhanced"], mask)
+    ori_then_pc_patch = project_crystal_patch(projection, ori_then_pc_pc, ori_then_pc_matrix, images["enhanced"], mask)
+
+    fig = plt.figure(figsize=(18, 9.5))
+    axes = [fig.add_subplot(2, 4, index + 1) for index in range(8)]
+
+    axes[0].imshow(projection.pattern, cmap="gray")
+    axes[0].contour(mask, levels=[0.5], colors=["#ff3030"], linewidths=0.8)
+    axes[0].set_title(f"Raw + full mask\ncircle=({circle[0]}, {circle[1]}, r={circle[2]})")
+    axes[0].axis("off")
+
+    imshow_master_patch(axes[1], master_texture, scan_patch, f"Common start: scan-position PC\nscore={scan_score[2]:+.5f}")
+    imshow_master_patch(
+        axes[2],
+        master_texture,
+        pc_then_ori_patch,
+        "A: PC residual -> orientation residual\n"
+        f"score={pc_then_ori_score[2]:+.5f}",
+    )
+    imshow_master_patch(
+        axes[3],
+        master_texture,
+        ori_then_pc_patch,
+        "B: orientation residual -> PC residual\n"
+        f"score={ori_then_pc_score[2]:+.5f}",
+    )
+
+    overlay = np.zeros((*scan_patch[1].shape, 4), dtype=np.float32)
+    overlay[..., 0] = np.where(pc_then_ori_patch[1], 1.0, 0.0)
+    overlay[..., 1] = np.where(scan_patch[1] | ori_then_pc_patch[1], 0.9, 0.0)
+    overlay[..., 2] = np.where(ori_then_pc_patch[1], 1.0, 0.0)
+    overlay[..., 3] = np.where(scan_patch[1] | pc_then_ori_patch[1] | ori_then_pc_patch[1], 0.62, 0.0)
+    axes[4].imshow(master_texture, cmap="gray", origin="upper", extent=[-180, 180, 180, 0], aspect="auto")
+    axes[4].imshow(overlay, origin="upper", extent=[-180, 180, 180, 0], aspect="auto")
+    axes[4].set_title("Footprint comparison\nyellow=start, red=A, cyan=B")
+    axes[4].set_xlabel("longitude (deg)")
+    axes[4].set_ylabel("colatitude (deg)")
+
+    labels = ["scan PC", "A final", "B final"]
+    scores = [scan_score[2], pc_then_ori_score[2], ori_then_pc_score[2]]
+    axes[5].bar(labels, scores, color=["#ffbf00", "#d62728", "#17becf"])
+    axes[5].set_title("Order comparison score")
+    axes[5].set_ylabel("combined NCC score")
+    axes[5].tick_params(axis="x", rotation=15)
+
+    axes[6].axis("off")
+    a_pc_delta = np.asarray(pc_then_ori_pc) - np.asarray(scan_pc)
+    a_rot = (
+        pc_then_ori_best["rot_x_deg"],
+        pc_then_ori_best["rot_y_deg"],
+        pc_then_ori_best["rot_z_deg"],
+    )
+    axes[6].text(
+        0.02,
+        0.98,
+        "A: scan PC -> PC residual -> orientation residual\n"
+        f"PC residual: ({a_pc_delta[0]:+.6f}, {a_pc_delta[1]:+.6f}, {a_pc_delta[2]:+.6f})\n"
+        f"|PC residual|={norm3(a_pc_delta):.6f}\n"
+        f"dR deg: ({a_rot[0]:+.4f}, {a_rot[1]:+.4f}, {a_rot[2]:+.4f})\n"
+        f"|dR|={norm3(a_rot):.4f} deg\n"
+        f"score gain from scan: {pc_then_ori_score[2] - scan_score[2]:+.5f}",
+        va="top",
+        ha="left",
+        family="monospace",
+        fontsize=10,
+    )
+
+    axes[7].axis("off")
+    b_pc_delta = np.asarray(ori_then_pc_pc) - np.asarray(scan_pc)
+    b_rot = (
+        ori_then_pc_best["rot_x_deg"],
+        ori_then_pc_best["rot_y_deg"],
+        ori_then_pc_best["rot_z_deg"],
+    )
+    axes[7].text(
+        0.02,
+        0.98,
+        "B: scan PC -> orientation residual -> PC residual\n"
+        f"PC residual: ({b_pc_delta[0]:+.6f}, {b_pc_delta[1]:+.6f}, {b_pc_delta[2]:+.6f})\n"
+        f"|PC residual|={norm3(b_pc_delta):.6f}\n"
+        f"dR deg: ({b_rot[0]:+.4f}, {b_rot[1]:+.4f}, {b_rot[2]:+.4f})\n"
+        f"|dR|={norm3(b_rot):.4f} deg\n"
+        f"score gain from scan: {ori_then_pc_score[2] - scan_score[2]:+.5f}",
+        va="top",
+        ha="left",
+        family="monospace",
+        fontsize=10,
+    )
+
+    fig.suptitle("PC/orientation residual order comparison", fontsize=15)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
 def calibrate_one(
     args: argparse.Namespace,
     h5_row: dict[str, Any],
@@ -576,6 +763,38 @@ def calibrate_one(
         samplers=samplers,
         args=args,
     )
+    ori_first_matrix, ori_first_best, ori_first_trace = orientation_finetune(
+        projection=projection,
+        pc=scan_pc,
+        base_matrix=matrix,
+        mask=mask,
+        images=images,
+        samplers=samplers,
+        args=args,
+    )
+    ori_first_refined, ori_first_score_rows = pc_finetune(
+        projection=projection,
+        matrix=ori_first_matrix,
+        mask=mask,
+        images=images,
+        samplers=samplers,
+        stride=args.stride,
+        coarse_range=tuple(args.pc_range),
+        coarse_steps=args.coarse_steps,
+        fine_steps=args.fine_steps,
+        intensity_weight=args.intensity_weight,
+        band_weight=args.band_weight,
+    )
+    ori_then_pc_score = (
+        ori_first_refined.intensity_score,
+        ori_first_refined.band_score,
+        ori_first_refined.combined_score,
+    )
+    pc_then_ori_score = (
+        orientation_best["intensity_score"],
+        orientation_best["band_score"],
+        orientation_best["combined_score"],
+    )
     detector_patch = project_detector_patch(projection, original.pc, images["enhanced"], mask)
     original_patch = project_crystal_patch(projection, original.pc, matrix, images["enhanced"], mask)
     refined_patch = project_crystal_patch(projection, refined.pc, matrix, images["enhanced"], mask)
@@ -583,6 +802,8 @@ def calibrate_one(
     write_orientation_scores(pattern_dir / "orientation_scores.csv", orientation_rows)
     write_pc_scores(pattern_dir / "pc_finetune_scores.csv", score_rows)
     write_orientation_finetune_trace(pattern_dir / "orientation_finetune_trace.csv", orientation_trace)
+    write_orientation_finetune_trace(pattern_dir / "orientation_before_pc_trace.csv", ori_first_trace)
+    write_pc_scores(pattern_dir / "pc_after_orientation_finetune_scores.csv", ori_first_score_rows)
     single_args = one_pattern_args(args, up2_path, h5_row["h5_path"], pattern_index, pattern_dir)
     write_summary(
         pattern_dir / "single_kikuchi_pc_finetune_summary.csv",
@@ -629,6 +850,26 @@ def calibrate_one(
         orientation_best=orientation_best,
         orientation_trace=orientation_trace,
         scan_meta={**scan_meta, "mask_mode": mask_mode},
+    )
+    order_comparison_path = pattern_dir / f"{key}_pc_orientation_order_comparison.png"
+    save_order_comparison_visualization(
+        order_comparison_path,
+        projection=projection,
+        images=images,
+        mask=mask,
+        circle=circle,
+        master_texture=master_texture,
+        matrix=matrix,
+        scan_pc=scan_pc,
+        scan_score=scan_score,
+        pc_then_ori_pc=refined.pc,
+        pc_then_ori_matrix=orientation_matrix,
+        pc_then_ori_score=pc_then_ori_score,
+        pc_then_ori_best=orientation_best,
+        ori_then_pc_pc=ori_first_refined.pc,
+        ori_then_pc_matrix=ori_first_matrix,
+        ori_then_pc_score=ori_then_pc_score,
+        ori_then_pc_best=ori_first_best,
     )
 
     return {
@@ -689,11 +930,26 @@ def calibrate_one(
         "orientation_band_score": orientation_best["band_score"],
         "orientation_combined_score": orientation_best["combined_score"],
         "orientation_score_gain": orientation_best["combined_score"] - refined.combined_score,
+        "ori_then_pc_rot_x_deg": ori_first_best["rot_x_deg"],
+        "ori_then_pc_rot_y_deg": ori_first_best["rot_y_deg"],
+        "ori_then_pc_rot_z_deg": ori_first_best["rot_z_deg"],
+        "ori_then_pc_orientation_score": ori_first_best["combined_score"],
+        "ori_then_pc_refined_pcx": ori_first_refined.pc[0],
+        "ori_then_pc_refined_pcy": ori_first_refined.pc[1],
+        "ori_then_pc_refined_pcz": ori_first_refined.pc[2],
+        "ori_then_pc_delta_pcx": ori_first_refined.pc[0] - scan_pc[0],
+        "ori_then_pc_delta_pcy": ori_first_refined.pc[1] - scan_pc[1],
+        "ori_then_pc_delta_pcz": ori_first_refined.pc[2] - scan_pc[2],
+        "ori_then_pc_intensity_score": ori_first_refined.intensity_score,
+        "ori_then_pc_band_score": ori_first_refined.band_score,
+        "ori_then_pc_combined_score": ori_first_refined.combined_score,
+        "order_score_delta_ori_pc_minus_pc_ori": ori_first_refined.combined_score - orientation_best["combined_score"],
         "sample_tilt_deg": projection.sample_tilt,
         "camera_elevation_deg": projection.camera_elevation,
         "camera_azimuthal_deg": projection.camera_azimuthal,
         "overview_png": str(overview_path),
         "position_orientation_png": str(position_orientation_path),
+        "order_comparison_png": str(order_comparison_path),
         "output_dir": str(pattern_dir),
     }
 
@@ -730,20 +986,24 @@ def write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
         "",
         f"- Calibrated patterns: {len(rows)}",
         "- Fixed workflow: full Kikuchi disk mask -> background correction/CLAHE -> scan-position PC correction -> residual PC finetune -> residual orientation finetune.",
+        "- Order diagnostic also tests scan-position PC -> residual orientation finetune -> residual PC finetune.",
         "- Cubic symmetry/axis placement is not applied here; this is the detector-validated single-pattern matching flow.",
         "",
-        "| Specimen | Area | Index | IQ | CI | Orientation variant | Map score | Scan PC score | PC score | PC+ori score | Residual PC | dR deg | Overview |",
-        "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- |",
+        "| Specimen | Area | Index | IQ | CI | Orientation variant | Map score | Scan PC score | A PC->ori | B ori->PC | B-A | A residual PC | A dR deg | B residual PC | B dR deg | Overview |",
+        "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
-        delta = f"({float(row['delta_pcx']):+.5f}, {float(row['delta_pcy']):+.5f}, {float(row['delta_pcz']):+.5f})"
-        drot = f"({float(row['orientation_rot_x_deg']):+.3f}, {float(row['orientation_rot_y_deg']):+.3f}, {float(row['orientation_rot_z_deg']):+.3f})"
+        a_delta = f"({float(row['delta_pcx']):+.5f}, {float(row['delta_pcy']):+.5f}, {float(row['delta_pcz']):+.5f})"
+        a_drot = f"({float(row['orientation_rot_x_deg']):+.3f}, {float(row['orientation_rot_y_deg']):+.3f}, {float(row['orientation_rot_z_deg']):+.3f})"
+        b_delta = f"({float(row['ori_then_pc_delta_pcx']):+.5f}, {float(row['ori_then_pc_delta_pcy']):+.5f}, {float(row['ori_then_pc_delta_pcz']):+.5f})"
+        b_drot = f"({float(row['ori_then_pc_rot_x_deg']):+.3f}, {float(row['ori_then_pc_rot_y_deg']):+.3f}, {float(row['ori_then_pc_rot_z_deg']):+.3f})"
         lines.append(
             f"| {row['specimen']} | {row['area']} | {row['pattern_index']} | "
             f"{float(row['IQ']):.0f} | {float(row['CI']):.3f} | {row['orientation_variant']} | "
             f"{float(row['map_combined_score']):+.5f} | {float(row['original_combined_score']):+.5f} | "
-            f"{float(row['refined_combined_score']):+.5f} | {float(row['orientation_combined_score']):+.5f} | "
-            f"{delta} | {drot} | `{row['position_orientation_png']}` |"
+            f"{float(row['orientation_combined_score']):+.5f} | {float(row['ori_then_pc_combined_score']):+.5f} | "
+            f"{float(row['order_score_delta_ori_pc_minus_pc_ori']):+.5f} | "
+            f"{a_delta} | {a_drot} | {b_delta} | {b_drot} | `{row['order_comparison_png']}` |"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -831,7 +1091,8 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(orientation_finetune=True)
     parser.add_argument("--orientation-finetune", dest="orientation_finetune", action="store_true")
     parser.add_argument("--no-orientation-finetune", dest="orientation_finetune", action="store_false")
-    parser.add_argument("--orientation-bound-deg", type=float, default=3.0)
+    parser.add_argument("--orientation-bound-deg", type=float, default=0.5)
+    parser.add_argument("--orientation-step-deg", type=float, default=0.05)
     parser.add_argument("--orientation-steps", type=int, default=7)
     parser.add_argument("--orientation-fine-steps", type=int, default=9)
     parser.add_argument("--orientation-regularization-weight", type=float, default=0.0)
