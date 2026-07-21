@@ -21,12 +21,12 @@ from align_pt_afm_sem_ipf import read_afm_channels, robust_rescale
 from export_h5_ipf_bse_maps import cubic_ipf_z_colors
 
 
-DEFAULT_AFM = Path(r"D:\EBSD project\3d数据\pt-afm\Pt-1.ibw")
+DEFAULT_AFM = Path(r"C:\Users\WHJ\OneDrive\xwechat_files\wxid_udhlesdsllnu22_8cd9\msg\file\2026-07\Pt-1(1).ibw")
 DEFAULT_ALIGNMENT_METADATA = Path("outputs") / "pt_afm_sem_ipf_alignment" / "afm_sem_ipf_alignment_metadata.json"
 DEFAULT_FINETUNED_IPF_METADATA = (
     Path("outputs") / "pt3_area90_finetuned_ipf_map" / "pt3_area90_finetuned_ipf_metadata.json"
 )
-DEFAULT_OUTPUT_DIR = Path("outputs") / "pt_afm_ebsd_surface_index"
+DEFAULT_OUTPUT_DIR = Path("outputs") / "pt_afm_ebsd_scharr_surface_index"
 DEFAULT_H5 = Path(r"D:\EBSD project\EBSD-data\Pt-1\20251209Pt.edaxh5")
 DEFAULT_H5_GROUP = "20251209/Pt-3/Area 3-90/OIM Map 1"
 
@@ -57,6 +57,16 @@ def plane_level(height_um: np.ndarray) -> np.ndarray:
     return (values - plane).astype(np.float32)
 
 
+def affine_rotation_2d(affine_afm_to_sem: np.ndarray) -> np.ndarray:
+    linear = affine_afm_to_sem[:, :2].astype(np.float64)
+    u, _s, vt = np.linalg.svd(linear)
+    rotation = u @ vt
+    if np.linalg.det(rotation) < 0:
+        u[:, -1] *= -1.0
+        rotation = u @ vt
+    return rotation.astype(np.float32)
+
+
 def height_to_normals(
     height_um: np.ndarray,
     scan_size_um: float,
@@ -69,31 +79,27 @@ def height_to_normals(
 
     pitch_x_um = scan_size_um / max(height.shape[1] - 1, 1)
     pitch_y_um = scan_size_um / max(height.shape[0] - 1, 1)
-    dz_drow_um, dz_dcol_um = np.gradient(smooth, pitch_y_um, pitch_x_um)
 
-    # The full 2D affine maps AFM pixel coordinates into the SEM/IPF top-view frame.
-    # Transform the two AFM tangent directions into the sample top-view frame before
-    # taking the cross product, so the resulting normal is in the EBSD map frame.
-    linear = affine_afm_to_sem[:, :2].astype(np.float64)
-    det = abs(float(np.linalg.det(linear)))
-    sem_um_per_px = float(np.sqrt((pitch_x_um * pitch_y_um) / max(det, 1e-12)))
-    tangent_col = np.dstack(
+    scharr_col = cv2.Scharr(smooth.astype(np.float32), cv2.CV_32F, 1, 0, scale=1.0 / 32.0)
+    scharr_row = cv2.Scharr(smooth.astype(np.float32), cv2.CV_32F, 0, 1, scale=1.0 / 32.0)
+    dz_dcol_um = scharr_col / max(pitch_x_um, 1e-12)
+    dz_drow_um = scharr_row / max(pitch_y_um, 1e-12)
+
+    normals_afm = np.dstack(
         [
-            np.full_like(smooth, linear[0, 0] * sem_um_per_px, dtype=np.float32),
-            np.full_like(smooth, linear[1, 0] * sem_um_per_px, dtype=np.float32),
-            dz_dcol_um.astype(np.float32),
+            -dz_dcol_um.astype(np.float32),
+            -dz_drow_um.astype(np.float32),
+            np.ones_like(smooth, dtype=np.float32),
         ]
     )
-    tangent_row = np.dstack(
-        [
-            np.full_like(smooth, linear[0, 1] * sem_um_per_px, dtype=np.float32),
-            np.full_like(smooth, linear[1, 1] * sem_um_per_px, dtype=np.float32),
-            dz_drow_um.astype(np.float32),
-        ]
-    )
-    normals = np.cross(tangent_col, tangent_row)
-    norm = np.linalg.norm(normals, axis=2, keepdims=True)
-    normals = normals / np.maximum(norm, 1e-12)
+    normals_afm /= np.linalg.norm(normals_afm, axis=2, keepdims=True) + 1e-12
+
+    # Only the in-plane rotation part of AFM->SEM is used for normals. Scale and
+    # shear are registration terms, not height-gradient terms.
+    rotation = affine_rotation_2d(affine_afm_to_sem)
+    normals_xy = normals_afm[..., :2].reshape(-1, 2) @ rotation.T
+    normals = np.column_stack([normals_xy, normals_afm[..., 2].reshape(-1)]).reshape(normals_afm.shape)
+    normals /= np.linalg.norm(normals, axis=2, keepdims=True) + 1e-12
     normals[normals[..., 2] < 0] *= -1.0
 
     tilt_deg = np.degrees(np.arccos(np.clip(normals[..., 2], -1.0, 1.0))).astype(np.float32)
@@ -101,12 +107,15 @@ def height_to_normals(
     return {
         "height_um": height.astype(np.float32),
         "height_smooth_um": smooth.astype(np.float32),
+        "normals_afm": normals_afm.astype(np.float32),
         "normals_sample": normals.astype(np.float32),
+        "scharr_dz_dcol": dz_dcol_um.astype(np.float32),
+        "scharr_dz_drow": dz_drow_um.astype(np.float32),
         "tilt_deg": tilt_deg,
         "azimuth_deg": azimuth_deg,
         "pitch_x_um": float(pitch_x_um),
         "pitch_y_um": float(pitch_y_um),
-        "sem_um_per_px_from_affine_area": sem_um_per_px,
+        "afm_to_sem_rotation_2d": rotation,
     }
 
 
@@ -256,7 +265,7 @@ def save_overview(
 ) -> None:
     fig, axes = plt.subplots(2, 2, figsize=(11.5, 10.0), dpi=220, constrained_layout=True)
     im0 = axes[0, 0].imshow(height_um * 1000.0, cmap="viridis")
-    axes[0, 0].set_title("AFM leveled height (nm)")
+    axes[0, 0].set_title("AFM height (nm)")
     fig.colorbar(im0, ax=axes[0, 0], shrink=0.82)
     axes[0, 1].imshow(normal_rgb)
     axes[0, 1].set_title("Surface normal direction color")
@@ -556,7 +565,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         scan_size_um=scan_size_um,
         affine_afm_to_sem=affine,
         smooth_sigma_px=args.normal_smooth_sigma_px,
-        level=not args.no_plane_level,
+        level=args.plane_level,
     )
     orientation_delta = None if args.no_finetuned_orientation else orientation_delta_from_metadata(args.finetuned_ipf_metadata)
     ebsd = read_ebsd_map(args.h5, args.h5_group, orientation_delta)
@@ -571,6 +580,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     paths = {
         "overview": args.output_dir / "afm_normals_surface_index_overview.png",
+        "scharr_normalmap": args.output_dir / "afm_scharr_normalmap.png",
         "top_view": args.output_dir / "ebsd_afm_surface_index_top_view.png",
         "ebsd_top_view": args.output_dir / "ebsd_ipf_top_view_sem_frame.png",
         "surface_index_top_view": args.output_dir / "surface_index_top_view_ebsd_frame.png",
@@ -583,6 +593,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "hkl_counts": args.output_dir / "nearest_hkl_counts.csv",
         "metadata": args.output_dir / "afm_ebsd_surface_index_metadata.json",
     }
+    plt.imsave(paths["scharr_normalmap"], normal_rgb)
     save_overview(paths["overview"], normal_data["height_um"], normal_rgb, normal_data["tilt_deg"], facet_rgb_map, valid)
     save_top_view(
         paths["top_view"],
@@ -618,8 +629,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         paths["data_npz"],
         height_um=normal_data["height_um"],
         height_smooth_um=normal_data["height_smooth_um"],
+        normals_afm=normal_data["normals_afm"],
         normals_sample=normals_sample,
         normals_crystal=normals_crystal,
+        scharr_dz_dcol=normal_data["scharr_dz_dcol"],
+        scharr_dz_drow=normal_data["scharr_dz_drow"],
         folded_surface_index=folded,
         facet_rgb=facet_rgb_map,
         normal_direction_rgb=normal_rgb,
@@ -633,9 +647,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     metadata = {
         "method_note": (
-            "AFM height normals are mapped into the EBSD/IPF top-view frame with the AFM->SEM affine; "
-            "each valid EBSD orientation converts the sample normal into crystal coordinates, then cubic "
-            "symmetry folding produces the surface-index color."
+            "AFM depthmap normals are extracted with the Scharr operator. The AFM->SEM affine contributes "
+            "only its in-plane rotation to orient the normalmap in the EBSD/IPF top-view frame; affine scale "
+            "and shear are not used in the depth gradient."
         ),
         "paper_method_reference": "Brüning et al. 2023, Journal of Microscopy: combine AFM surface normals with EBSD orientation to map facet types.",
         "afm": str(args.afm),
@@ -645,13 +659,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "h5_group": args.h5_group,
         "alignment_metadata": str(args.alignment_metadata),
         "finetuned_orientation_delta_deg": orientation_delta,
-        "plane_level": not args.no_plane_level,
+        "normal_operator": "cv2.Scharr(depthmap, scale=1/32), then physical pitch normalization",
+        "afm_to_sem_rotation_2d": np.asarray(normal_data["afm_to_sem_rotation_2d"]).tolist(),
+        "plane_level": args.plane_level,
         "normal_smooth_sigma_px": args.normal_smooth_sigma_px,
         "valid_pixel_count": int(np.count_nonzero(valid)),
         "valid_fraction_of_afm": float(np.mean(valid)),
         "normal_pitch_x_um": normal_data["pitch_x_um"],
         "normal_pitch_y_um": normal_data["pitch_y_um"],
-        "sem_um_per_px_from_affine_area": normal_data["sem_um_per_px_from_affine_area"],
         "outputs": {key: str(value.resolve()) for key, value in paths.items() if key != "metadata"},
     }
     paths["metadata"].write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -676,11 +691,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--h5-group", default=DEFAULT_H5_GROUP)
     parser.add_argument("--height-channel", default="HeightRetrace")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--normal-smooth-sigma-px", type=float, default=1.2)
+    parser.add_argument("--normal-smooth-sigma-px", type=float, default=0.0)
     parser.add_argument("--tilt-color-ref-deg", type=float, default=35.0)
     parser.add_argument("--plot-stride", type=int, default=4)
     parser.add_argument("--export-stride", type=int, default=4)
-    parser.add_argument("--no-plane-level", action="store_true")
+    parser.add_argument("--plane-level", action="store_true")
     parser.add_argument("--no-finetuned-orientation", action="store_true")
     return parser.parse_args()
 

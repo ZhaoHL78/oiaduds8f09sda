@@ -404,9 +404,10 @@
 
 - `afm_ebsd_surface_index.py` 用于把已经配准好的 AFM 高度场转换为表面法向量，并把这些法向量与 EBSD orientation 结合，得到样品表面法向在晶体坐标系中的 `{hkl}` / surface-index 数据。
 - 这个流程参考 Brüning et al. 2023 的 AFM+EBSD facet type 思路：
-  - 从 AFM `HeightRetrace` 得到高度场；
-  - 对高度场做平面 leveling 和轻微 Gaussian smoothing，仅用于稳定法向量计算；
-  - 用 AFM->SEM affine 把 AFM 平面切向量变换到 EBSD/IPF top-view frame；
+  - 从 AFM `HeightRetrace` 输入原始 depthmap；
+  - 默认不做 plane leveling 和 smoothing，直接用 Scharr 算子计算 `dz/dx`、`dz/dy`；
+  - 在 AFM 原始像素坐标中构造 `[-dz/dx, -dz/dy, 1]` normalmap；
+  - AFM->SEM affine 只取 polar decomposition 得到的平面旋转部分，用于把 normalmap 转到 EBSD/IPF top-view frame；affine 的 scale/shear 不再进入高度梯度；
   - 计算 sample-frame surface normal；
   - 根据 AFM->SEM->EBSD mapping 找到每个 AFM 像素对应的 EBSD orientation；
   - 用 Pt-3 90° finetuned orientation residual 后的 `G` 把 sample normal 转到 crystal frame；
@@ -415,10 +416,13 @@
   - sample-frame normal direction map 使用 HSV：azimuth 决定 hue，tilt 决定 saturation；
   - crystal-frame surface-index map 使用 `{100}=red`、`{110}=green`、`{111}=blue` 的 cubic facet colour key。
 - 当前本机结果：
+  - 默认 AFM 输入为用户新给出的 `C:\Users\WHJ\OneDrive\xwechat_files\wxid_udhlesdsllnu22_8cd9\msg\file\2026-07\Pt-1(1).ibw`；
   - AFM 有效配准区域中 `1,035,695` 个像素有 EBSD orientation，对应 AFM 总像素的 `0.988`；
   - 默认应用 Pt-3 90° finetuned orientation residual `(-0.25, -0.35, -0.20) deg`；
+  - Scharr normalmap 输出保存在 `outputs/pt_afm_ebsd_scharr_surface_index/`；
   - 输出完整 `.npz` 数据，同时导出 stride=4 的 CSV 和 PLY 点云，便于后续统计、3D 可视化或导入外部软件。
 - 输出：
+  - `afm_scharr_normalmap.png`
   - `afm_normals_surface_index_overview.png`
   - `ebsd_afm_surface_index_top_view.png`
   - `ebsd_ipf_top_view_sem_frame.png`
@@ -623,12 +627,12 @@ D:\anaconda3\envs\torch\python.exe .\align_pt_afm_sem_ipf.py `
 
 ```powershell
 D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
-  --afm "D:\EBSD project\3d数据\pt-afm\Pt-1.ibw" `
+  --afm "C:\Users\WHJ\OneDrive\xwechat_files\wxid_udhlesdsllnu22_8cd9\msg\file\2026-07\Pt-1(1).ibw" `
   --alignment-metadata outputs\pt_afm_sem_ipf_alignment\afm_sem_ipf_alignment_metadata.json `
   --finetuned-ipf-metadata outputs\pt3_area90_finetuned_ipf_map\pt3_area90_finetuned_ipf_metadata.json `
   --h5 "D:\EBSD project\EBSD-data\Pt-1\20251209Pt.edaxh5" `
   --h5-group "20251209/Pt-3/Area 3-90/OIM Map 1" `
-  --output-dir outputs\pt_afm_ebsd_surface_index
+  --output-dir outputs\pt_afm_ebsd_scharr_surface_index
 ```
 
 ## 版本改动
@@ -637,7 +641,9 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 
 - 新增 `afm_ebsd_surface_index.py`，将 Pt AFM 高度场转换为 sample-frame surface normal，并结合 Pt-3 90° EBSD orientation 得到 crystal-frame surface-index / `{hkl}` 数据。
 - 该流程参考 Brüning et al. 2023 的 AFM+EBSD facet type 方法：AFM 法向量经 AFM->SEM affine 映射到 EBSD top-view frame，再用 EBSD orientation 转到晶体坐标系，最后按 cubic symmetry 折叠并用 `{100}=red, {110}=green, {111}=blue` 编码。
-- 本次 AFM+EBSD surface-index 输出保存在 `outputs/pt_afm_ebsd_surface_index/`：有效 AFM+EBSD 像素为 `1,035,695`，占 AFM 总像素 `0.988`，并输出完整 `.npz`、stride=4 CSV/PLY 点云、法向量颜色图、3D surface-index 图和 EBSD top-view overlay。
+- AFM+EBSD surface-index 当前推荐输出保存在 `outputs/pt_afm_ebsd_scharr_surface_index/`：有效 AFM+EBSD 像素为 `1,035,695`，占 AFM 总像素 `0.988`，并输出完整 `.npz`、stride=4 CSV/PLY 点云、Scharr normalmap、3D surface-index 图和 EBSD top-view overlay。
+- 修正 AFM 法向量计算：新版 `afm_ebsd_surface_index.py` 默认读取 `Pt-1(1).ibw`，直接对 `HeightRetrace` depthmap 使用 Scharr 算子提取 normalmap；AFM->SEM affine 只提供平面旋转，不再把 affine scale/shear 混入高度梯度。
+- Scharr normalmap 版本输出保存在 `outputs/pt_afm_ebsd_scharr_surface_index/`，新增 `afm_scharr_normalmap.png`，并在 `.npz` 中保存 `normals_afm`、`scharr_dz_dcol`、`scharr_dz_drow`。
 - 新增 `align_pt_afm_sem_ipf.py`，读取 Pt AFM `Pt-1.ibw`，用 LightGlue/SuperPoint + RANSAC full affine 配准到外部 SEM/BSE `2-90bse.tif`，再通过 Pt-3 90° 的固定 SEM/IPF 对应关系确认 AFM 与 EBSD/IPF map 的位置关系。
 - AFM IBW 当前读出 `1024 x 1024 x 4`，扫描尺寸 `18 um`，通道为 `HeightRetrace / AmplitudeRetrace / PhaseRetrace / ZSensorRetrace`；脚本自动裁 SEM 底栏、生成多通道 high-pass/edge 特征并选择尺度合理的 affine 候选。
 - 本次 AFM->SEM->IPF 输出保存在 `outputs/pt_afm_sem_ipf_alignment/`：最佳候选 `ZSensorRetrace_hp -> sem_hp`，`11/23` inliers，RMSE `4.70 px`，三晶界位置与 Pt-3 90° IPF/SEM 对齐。
