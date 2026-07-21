@@ -831,9 +831,9 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(orientation_finetune=True)
     parser.add_argument("--orientation-finetune", dest="orientation_finetune", action="store_true")
     parser.add_argument("--no-orientation-finetune", dest="orientation_finetune", action="store_false")
-    parser.add_argument("--orientation-bound-deg", type=float, default=1.2)
-    parser.add_argument("--orientation-steps", type=int, default=5)
-    parser.add_argument("--orientation-fine-steps", type=int, default=5)
+    parser.add_argument("--orientation-bound-deg", type=float, default=3.0)
+    parser.add_argument("--orientation-steps", type=int, default=7)
+    parser.add_argument("--orientation-fine-steps", type=int, default=9)
     parser.add_argument("--orientation-regularization-weight", type=float, default=0.0)
     args = parser.parse_args()
     if args.specimen == "":
