@@ -266,6 +266,7 @@
 ### 15. PC/orientation residual 联合可解释诊断
 
 - `joint_pc_orientation_explainability.py` 用于验证 PC residual 和 orientation residual 的互相代偿关系，并给出可解释性证据，而不是只追求单一 NCC 分数。
+- 注意：该脚本包含 H5/OHP band center/profile/width 等额外诊断项，系统更复杂，当前不作为主匹配流程，只用于分析 PC/orientation 代偿关系。
 - 默认读取同一组 Pt EBSD mapping：
   - H5: `D:\EBSD-data\Pt-1\20251209Pt.edaxh5`
   - specimen: `Pt-3`
@@ -293,6 +294,35 @@
   - `per_pattern/<pattern_key>/<pattern_key>_joint_pc_orientation_explainability.png`
   - `per_pattern/<pattern_key>/joint_optimization_trace.csv`
 
+### 16. 稳定全局 PC residual + orientation residual 主流程
+
+- `stable_global_pc_orientation_calibration.py` 是当前更推荐的简化主流程，用于避免 band width/profile 目标让系统过度复杂。
+- 默认读取同一组 Pt EBSD mapping：
+  - H5: `D:\EBSD-data\Pt-1\20251209Pt.edaxh5`
+  - specimen: `Pt-3`
+  - area: `Area 3-90`
+  - 默认选择 5 张 high-IQ/high-CI Kikuchi。
+- 核心约束：
+  - PC residual 是 mapping-level 的全局共享偏移，所有选中 Kikuchi 使用同一个 `delta PCx, delta PCy, delta PCz`。
+  - 每张 Kikuchi 的 PC 仍从 scan-position PC 出发：`stable PC_i = scan_position_PC_i + global_delta_PC`。
+  - PC 固定后，每张 Kikuchi 只做小范围 orientation residual，默认每轴 `-0.5°` 到 `+0.5°`、步长 `0.05°`。
+- 目标函数只使用原来验证过的 detector-space image NCC：
+  - preprocessed intensity NCC；
+  - band-enhanced image NCC；
+  - global PC prior。
+- 不再使用 band width/profile loss，避免局部 band 特征把 PC/orientation 拟合带偏。
+- 当前 Pt-3 Area 3-90 默认 5 张结果：
+  - global PC residual: `(-0.002, +0.002, -0.008)`；
+  - 5 张 pattern 均满足 `scan PC score < global PC score < PC+orientation score`；
+  - 说明在保持 PC 全局稳定后，PC residual 和 orientation residual 都提供了稳定增益。
+- 输出：
+  - `stable_global_pc_diagnostic.png`
+  - `stable_global_pc_orientation_contact_sheet.png`
+  - `stable_global_pc_orientation_summary.csv`
+  - `global_pc_residual_grid.csv`
+  - `per_pattern/<pattern_key>/<pattern_key>_stable_global_pc_orientation.png`
+  - `per_pattern/<pattern_key>/orientation_residual_trace.csv`
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -300,6 +330,7 @@
 - `single_kikuchi_pc_finetune.py`
 - `batch_pt_kikuchi_spherical_calibration.py`
 - `joint_pc_orientation_explainability.py`
+- `stable_global_pc_orientation_calibration.py`
 - `pt3_same_face_spherical_calibration.py`
 - `pt_highres_30deg_lightglue_calibration.py`
 - `visualize_edax_projection_sets.py`
@@ -461,6 +492,16 @@ D:\anaconda3\envs\torch\python.exe .\batch_pt_kikuchi_spherical_calibration.py `
   --output-dir outputs\pt_batch_kikuchi_spherical_calibration
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\stable_global_pc_orientation_calibration.py `
+  --h5 D:\EBSD-data\Pt-1\20251209Pt.edaxh5 `
+  --up2-root D:\EBSD-data `
+  --specimen Pt-3 `
+  --area "Area 3-90" `
+  --pattern-count 5 `
+  --output-dir outputs\pt_stable_global_pc_orientation
+```
+
 ## 版本改动
 
 ### 2026-07-21
@@ -477,6 +518,9 @@ D:\anaconda3\envs\torch\python.exe .\batch_pt_kikuchi_spherical_calibration.py `
 - 新增 `joint_pc_orientation_explainability.py`，把 PC/orientation 残差放入同一个联合诊断框架中，并引入 H5/OHP Kikuchi band 的 center/profile/width 约束。
 - 该脚本默认在 Pt-3 `Area 3-90 / OIM Map 1` 中选择 3 张 high-IQ/high-CI Kikuchi，输出 scan、PC-only、orientation-only、joint 四种候选，以及 PC-like / orientation-like evidence。
 - 当前默认结果显示 3 张 joint objective 均提升，H5/OHP band center error 明显下降，但 band width error 没有同步下降，因此 residual interpretation 均为 `orientation_dominant_pc_not_supported_by_width`。
+- 新增 `stable_global_pc_orientation_calibration.py`，作为当前更推荐的简化主流程：同一 mapping 多张 Kikuchi 共享一个 global PC residual，固定稳定 PC 后再做每张 pattern 的 orientation residual。
+- 该脚本不使用 band width/profile loss，只使用原来验证过的 preprocessed intensity + band-enhanced detector-space NCC，并通过 global PC prior 保持 PC 稳定。
+- 已在 Pt-3 `Area 3-90 / OIM Map 1` 默认 5 张 Kikuchi 上跑通：global PC residual 为 `(-0.002, +0.002, -0.008)`，5 张均满足 `scan PC score < global PC score < PC+orientation score`。
 - 新增本地输出：
   - `outputs/pt_batch_kikuchi_spherical_calibration/pt_kikuchi_spherical_calibration_contact_sheet.png`
   - `outputs/pt_batch_kikuchi_spherical_calibration/pt_kikuchi_spherical_calibration_summary.csv`
@@ -487,6 +531,10 @@ D:\anaconda3\envs\torch\python.exe .\batch_pt_kikuchi_spherical_calibration.py `
   - `outputs/pt_joint_pc_orientation_explainability/joint_pc_orientation_explainability_contact_sheet.png`
   - `outputs/pt_joint_pc_orientation_explainability/joint_pc_orientation_explainability_summary.csv`
   - `outputs/pt_joint_pc_orientation_explainability/per_pattern/*/*_joint_pc_orientation_explainability.png`
+  - `outputs/pt_stable_global_pc_orientation/stable_global_pc_diagnostic.png`
+  - `outputs/pt_stable_global_pc_orientation/stable_global_pc_orientation_contact_sheet.png`
+  - `outputs/pt_stable_global_pc_orientation/stable_global_pc_orientation_summary.csv`
+  - `outputs/pt_stable_global_pc_orientation/per_pattern/*/*_stable_global_pc_orientation.png`
 
 ### 2026-07-06
 
