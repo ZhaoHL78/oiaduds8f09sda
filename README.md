@@ -163,6 +163,21 @@
 - 当前对应规则是 `specimen + pattern count` 精确匹配，并在同一组内按采集/修改时间顺序配对。
 - 输出 `h5_mapping_sem_correspondence.csv`，记录 H5 mapping、SEM 图路径、匹配到的原始 UP2 文件名和实际本机位置。
 
+### 10.1 Pt-3 外部 EDAX IPF 与 SEM/BSE 固定对应
+
+- `export_pt3_external_ipf_sem_mapping.py` 用于 Pt-3 UP2 `Area 4/5/7/9` 的最终 IPF/SEM 对应可视化。
+- 这一步不再使用 H5 内置的 `SEM-PRIAS Images/DATA/SEM` 低分辨率 SEM，也不再用 H5 `Orientations` 近似重算 IPF-Z。
+- 原因是 EDAX 软件导出的 IPF 图和外部 BSE tif 使用了软件自己的裁剪、坏点处理、颜色 convention 和 SEM 对应关系；直接把 H5 里的 `400 x 512` SEM 与重算 IPF 叠加，会造成 SEM/IPF 视场和角度关系错误。
+- 固定对应关系：
+  - UP2 `20251209_Pt-3_Area 4_OIM Map 1.up2` -> H5 `20251209/Pt-3/Area 3-90/OIM Map 1` -> IPF `90.bmp` -> SEM `2-90bse.tif`
+  - UP2 `20251209_Pt-3_Area 5_OIM Map 1.up2` -> H5 `20251209/Pt-3/Area 3-180/OIM Map 1` -> IPF `180.bmp` -> SEM `2-180bse.tif`
+  - UP2 `20251209_Pt-3_Area 7_OIM Map 1.up2` -> H5 `20251209/Pt-3/Area 3-270/OIM Map 1` -> IPF `270.bmp` -> SEM `2-270bse.tif`
+  - UP2 `20251209_Pt-3_Area 9_OIM Map 1.up2` -> H5 `20251209/Pt-3/Area 3-360/OIM Map 1` -> IPF `0.bmp` -> SEM `2-360bse.tif`
+- 输出：
+  - `pt3_area4_5_7_9_corrected_ipf_bse_contact_sheet.png`
+  - `pt3_area4_5_7_9_corrected_external_mapping.csv`
+  - 每组单独的 EDAX IPF PNG、BSE full PNG 和裁底栏后的 BSE crop PNG。
+
 ### 11. UP2 到 EBSD 与 Kikuchi 的逐文件对应
 
 - `export_up2_ebsd_kikuchi_correspondence.py` 以 UP2 文件为主线读取 `E:\ZHL\EBSD-RAW\20251209Pt`。
