@@ -370,6 +370,36 @@
   - `per_pattern/<pattern_key>/<pattern_key>_stable_global_pc_orientation.png`
   - `per_pattern/<pattern_key>/orientation_residual_trace.csv`
 
+### 17. Pt AFM -> SEM -> EBSD/IPF 配准
+
+- `align_pt_afm_sem_ipf.py` 用于把 `D:\EBSD project\3d数据\pt-afm\Pt-1.ibw` 中的 AFM 图像配准到对应的外部 SEM/BSE，再根据已确认的 SEM/IPF 关系放入 EBSD/IPF 坐标系。
+- 默认对应关系沿用 Pt-3 90° 这组数据：
+  - AFM: `D:\EBSD project\3d数据\pt-afm\Pt-1.ibw`
+  - SEM/BSE: `E:\ZHL\20251209Pt-EBSD\2-90bse.tif`
+  - EBSD/IPF: Pt-3 `Area 3-90 / OIM Map 1`
+  - UP2: `20251209_Pt-3_Area 4_OIM Map 1.up2`
+  - IPF: 优先使用 `outputs\pt3_area90_finetuned_ipf_map\pt3_area90_finetuned_ipf_clean_714x550.png`，不存在时回退到 EDAX `90.bmp`。
+- AFM IBW 当前读出为 `1024 x 1024 x 4`，通道为 `HeightRetrace / AmplitudeRetrace / PhaseRetrace / ZSensorRetrace`，扫描尺寸为 `18 um`。
+- 依赖：`igor2` 用于读取 `.ibw`，`lightglue`/`torch` 用于 SuperPoint 特征和匹配。
+- 配准流程：
+  - 自动裁掉 SEM/BSE 底部显微镜信息栏，只保留真实图像区域。
+  - 对 AFM 多通道和 SEM 生成 normalized / high-pass / inverted / Sobel / Canny 特征图。
+  - 使用 LightGlue + SuperPoint 提取匹配点，并用 RANSAC full affine 估计 AFM -> SEM 变换；full affine 用于保留 AFM/SEM 之间的非等比例尺度差。
+  - 候选排序加入轻量物理尺度约束，避免少量局部特征把 AFM 放大到不合理尺度。
+  - 将 AFM height/amplitude warp 到 SEM frame，再和 Pt-3 90° IPF frame 叠加。
+- 当前本机结果：最佳候选为 `ZSensorRetrace_hp` 对 `sem_hp`，LightGlue/SuperPoint 为 `11/23` RANSAC inliers，RMSE `4.70 px`；三晶界交点、左上斜晶界和右上台阶边界均落在 SEM/IPF 的对应位置。
+- 输出：
+  - `afm_sem_ipf_alignment_overview.png`
+  - `lightglue_afm_sem_inlier_matches.png`
+  - `lightglue_afm_sem_candidates.csv`
+  - `afm_channels_preview.png`
+  - `candidate_sem_preview.png`
+  - `sem_2_90_content_norm.png`
+  - `ipf_resized_to_sem_frame.png`
+  - `afm_amplitude_warped_to_sem.png`
+  - `afm_height_warped_to_sem.png`
+  - `afm_sem_ipf_alignment_metadata.json`
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -380,6 +410,7 @@
 - `stable_global_pc_orientation_calibration.py`
 - `pt3_same_face_spherical_calibration.py`
 - `pt_highres_30deg_lightglue_calibration.py`
+- `align_pt_afm_sem_ipf.py`
 - `visualize_edax_projection_sets.py`
 - `visualize_edax_match_3d.py`
 - `visualize_scan_position_pc_correction.py`
@@ -549,10 +580,21 @@ D:\anaconda3\envs\torch\python.exe .\stable_global_pc_orientation_calibration.py
   --output-dir outputs\pt_stable_global_pc_orientation
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\align_pt_afm_sem_ipf.py `
+  --afm "D:\EBSD project\3d数据\pt-afm\Pt-1.ibw" `
+  --sem E:\ZHL\20251209Pt-EBSD\2-90bse.tif `
+  --ipf outputs\pt3_area90_finetuned_ipf_map\pt3_area90_finetuned_ipf_clean_714x550.png `
+  --output-dir outputs\pt_afm_sem_ipf_alignment
+```
+
 ## 版本改动
 
 ### 2026-07-21
 
+- 新增 `align_pt_afm_sem_ipf.py`，读取 Pt AFM `Pt-1.ibw`，用 LightGlue/SuperPoint + RANSAC full affine 配准到外部 SEM/BSE `2-90bse.tif`，再通过 Pt-3 90° 的固定 SEM/IPF 对应关系确认 AFM 与 EBSD/IPF map 的位置关系。
+- AFM IBW 当前读出 `1024 x 1024 x 4`，扫描尺寸 `18 um`，通道为 `HeightRetrace / AmplitudeRetrace / PhaseRetrace / ZSensorRetrace`；脚本自动裁 SEM 底栏、生成多通道 high-pass/edge 特征并选择尺度合理的 affine 候选。
+- 本次 AFM->SEM->IPF 输出保存在 `outputs/pt_afm_sem_ipf_alignment/`：最佳候选 `ZSensorRetrace_hp -> sem_hp`，`11/23` inliers，RMSE `4.70 px`，三晶界位置与 Pt-3 90° IPF/SEM 对齐。
 - 新增 `batch_pt_kikuchi_spherical_calibration.py`，把当前效果最好的单张 Kikuchi 球面匹配校准方案固定成可复用批处理流程。
 - 默认在 `D:\EBSD-data\Pt-1\20251209Pt.edaxh5` 和 `D:\EBSD-data` 中自动匹配 Pt-3 的 H5/UP2 数据，并从每个 matched mapping 中挑选 high-IQ/high-CI Kikuchi。
 - 批处理流程复用 `single_kikuchi_pc_finetune.py` 的背景扣除、CLAHE、H5 orientation 投影和 PC scoring；批处理层新增完整 disk mask、scan-position PC 初值和 residual orientation finetune，不做 cubic symmetry 轴线摆放。
