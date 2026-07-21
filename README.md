@@ -230,11 +230,34 @@
   - `pt_highres_30deg_cubic_symmetry_axis_prior_summary.csv`
   - `pt_highres_sem_transforms_raw_to_angle0.npz`
 
+### 14. Pt Kikuchi 批量球面匹配校准固定流程
+
+- `batch_pt_kikuchi_spherical_calibration.py` 是当前推荐的固定批处理入口，用于在 Pt EBSD 数据中自动挑选若干高质量 Kikuchi，并复用单张 pattern 已验证的球面匹配流程。
+- 默认数据：
+  - H5: `D:\EBSD-data\Pt-1\20251209Pt.edaxh5`
+  - UP2 root: `D:\EBSD-data`
+  - specimen filter: `Pt-3`
+- 流程：
+  - 用已有 `collect_h5_maps / collect_up2_candidates / match_h5_to_up2` 规则自动匹配 H5 mapping 和本地 UP2 文件。
+  - 每个 matched mapping 默认挑选 1 张 high-IQ/high-CI Kikuchi；可用 `--patterns-per-map` 和 `--max-patterns` 扩展数量。
+  - 对每张 Kikuchi 执行固定流程：圆形 mask、背景扣除、CLAHE 衬度增强、H5 orientation 投影到 master sphere、局部 PC finetune。
+  - 不做 cubic symmetry/axis placement；这是 detector-validated 的单张球面匹配校准流程。
+- 当前默认运行在本机 Pt-3 数据上匹配到 5 个 mapping，并输出 5 张详细九宫格校准图。5 张均选择 `edax_g_direct_row_major`，refined score 均高于 original score。
+- 输出：
+  - `pt_kikuchi_spherical_calibration_contact_sheet.png`
+  - `pt_kikuchi_spherical_calibration_summary.csv`
+  - `pt_kikuchi_spherical_calibration_summary.md`
+  - `per_pattern/<pattern_key>/<pattern_key>_spherical_calibration_overview.png`
+  - `per_pattern/<pattern_key>/orientation_scores.csv`
+  - `per_pattern/<pattern_key>/pc_finetune_scores.csv`
+  - `per_pattern/<pattern_key>/single_kikuchi_pc_finetune_summary.csv`
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
 - `diagnose_edax_transform_chain.py`
 - `single_kikuchi_pc_finetune.py`
+- `batch_pt_kikuchi_spherical_calibration.py`
 - `pt3_same_face_spherical_calibration.py`
 - `pt_highres_30deg_lightglue_calibration.py`
 - `visualize_edax_projection_sets.py`
@@ -387,7 +410,27 @@ D:\anaconda3\envs\torch\python.exe .\pt_highres_30deg_lightglue_calibration.py `
   --output-dir outputs\pt_highres_30deg_lightglue_calibration
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\batch_pt_kikuchi_spherical_calibration.py `
+  --h5 D:\EBSD-data\Pt-1\20251209Pt.edaxh5 `
+  --up2-root D:\EBSD-data `
+  --specimen Pt-3 `
+  --patterns-per-map 1 `
+  --output-dir outputs\pt_batch_kikuchi_spherical_calibration
+```
+
 ## 版本改动
+
+### 2026-07-21
+
+- 新增 `batch_pt_kikuchi_spherical_calibration.py`，把当前效果最好的单张 Kikuchi 球面匹配校准方案固定成可复用批处理流程。
+- 默认在 `D:\EBSD-data\Pt-1\20251209Pt.edaxh5` 和 `D:\EBSD-data` 中自动匹配 Pt-3 的 H5/UP2 数据，并从每个 matched mapping 中挑选 high-IQ/high-CI Kikuchi。
+- 批处理流程复用 `single_kikuchi_pc_finetune.py` 的圆形 mask、背景扣除、CLAHE、H5 orientation 投影、PC finetune 和九宫格可视化；不做 cubic symmetry 轴线摆放。
+- 已在本机 Pt-3 数据上跑通 5 张 Kikuchi：`Area 3-0 idx=9879`、`Area 3-90 idx=6088`、`Area 3-180 idx=75009`、`Area 3-270 idx=18635`、`Area 3-360 idx=68376`。5 张均自动选择 `edax_g_direct_row_major`，PC finetune 后 combined score 均提升。
+- 新增本地输出：
+  - `outputs/pt_batch_kikuchi_spherical_calibration/pt_kikuchi_spherical_calibration_contact_sheet.png`
+  - `outputs/pt_batch_kikuchi_spherical_calibration/pt_kikuchi_spherical_calibration_summary.csv`
+  - `outputs/pt_batch_kikuchi_spherical_calibration/per_pattern/*/*_spherical_calibration_overview.png`
 
 ### 2026-07-06
 
