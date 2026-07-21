@@ -400,6 +400,38 @@
   - `afm_height_warped_to_sem.png`
   - `afm_sem_ipf_alignment_metadata.json`
 
+### 18. AFM 法向量与 EBSD 表面晶面指数图
+
+- `afm_ebsd_surface_index.py` 用于把已经配准好的 AFM 高度场转换为表面法向量，并把这些法向量与 EBSD orientation 结合，得到样品表面法向在晶体坐标系中的 `{hkl}` / surface-index 数据。
+- 这个流程参考 Brüning et al. 2023 的 AFM+EBSD facet type 思路：
+  - 从 AFM `HeightRetrace` 得到高度场；
+  - 对高度场做平面 leveling 和轻微 Gaussian smoothing，仅用于稳定法向量计算；
+  - 用 AFM->SEM affine 把 AFM 平面切向量变换到 EBSD/IPF top-view frame；
+  - 计算 sample-frame surface normal；
+  - 根据 AFM->SEM->EBSD mapping 找到每个 AFM 像素对应的 EBSD orientation；
+  - 用 Pt-3 90° finetuned orientation residual 后的 `G` 把 sample normal 转到 crystal frame；
+  - 对 Pt/fcc cubic symmetry 做 `abs + sort` 折叠，得到 `{hkl}` 等价 surface-index direction。
+- 法向量颜色：
+  - sample-frame normal direction map 使用 HSV：azimuth 决定 hue，tilt 决定 saturation；
+  - crystal-frame surface-index map 使用 `{100}=red`、`{110}=green`、`{111}=blue` 的 cubic facet colour key。
+- 当前本机结果：
+  - AFM 有效配准区域中 `1,035,695` 个像素有 EBSD orientation，对应 AFM 总像素的 `0.988`；
+  - 默认应用 Pt-3 90° finetuned orientation residual `(-0.25, -0.35, -0.20) deg`；
+  - 输出完整 `.npz` 数据，同时导出 stride=4 的 CSV 和 PLY 点云，便于后续统计、3D 可视化或导入外部软件。
+- 输出：
+  - `afm_normals_surface_index_overview.png`
+  - `ebsd_afm_surface_index_top_view.png`
+  - `ebsd_ipf_top_view_sem_frame.png`
+  - `surface_index_top_view_ebsd_frame.png`
+  - `afm_surface_normals_3d.png`
+  - `afm_surface_index_3d.png`
+  - `facet_type_color_key.png`
+  - `afm_ebsd_surface_index_data.npz`
+  - `afm_ebsd_surface_index_point_cloud_stride4.csv`
+  - `afm_ebsd_surface_index_point_cloud_stride4.ply`
+  - `nearest_hkl_counts.csv`
+  - `afm_ebsd_surface_index_metadata.json`
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -411,6 +443,7 @@
 - `pt3_same_face_spherical_calibration.py`
 - `pt_highres_30deg_lightglue_calibration.py`
 - `align_pt_afm_sem_ipf.py`
+- `afm_ebsd_surface_index.py`
 - `visualize_edax_projection_sets.py`
 - `visualize_edax_match_3d.py`
 - `visualize_scan_position_pc_correction.py`
@@ -588,10 +621,23 @@ D:\anaconda3\envs\torch\python.exe .\align_pt_afm_sem_ipf.py `
   --output-dir outputs\pt_afm_sem_ipf_alignment
 ```
 
+```powershell
+D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
+  --afm "D:\EBSD project\3d数据\pt-afm\Pt-1.ibw" `
+  --alignment-metadata outputs\pt_afm_sem_ipf_alignment\afm_sem_ipf_alignment_metadata.json `
+  --finetuned-ipf-metadata outputs\pt3_area90_finetuned_ipf_map\pt3_area90_finetuned_ipf_metadata.json `
+  --h5 "D:\EBSD project\EBSD-data\Pt-1\20251209Pt.edaxh5" `
+  --h5-group "20251209/Pt-3/Area 3-90/OIM Map 1" `
+  --output-dir outputs\pt_afm_ebsd_surface_index
+```
+
 ## 版本改动
 
 ### 2026-07-21
 
+- 新增 `afm_ebsd_surface_index.py`，将 Pt AFM 高度场转换为 sample-frame surface normal，并结合 Pt-3 90° EBSD orientation 得到 crystal-frame surface-index / `{hkl}` 数据。
+- 该流程参考 Brüning et al. 2023 的 AFM+EBSD facet type 方法：AFM 法向量经 AFM->SEM affine 映射到 EBSD top-view frame，再用 EBSD orientation 转到晶体坐标系，最后按 cubic symmetry 折叠并用 `{100}=red, {110}=green, {111}=blue` 编码。
+- 本次 AFM+EBSD surface-index 输出保存在 `outputs/pt_afm_ebsd_surface_index/`：有效 AFM+EBSD 像素为 `1,035,695`，占 AFM 总像素 `0.988`，并输出完整 `.npz`、stride=4 CSV/PLY 点云、法向量颜色图、3D surface-index 图和 EBSD top-view overlay。
 - 新增 `align_pt_afm_sem_ipf.py`，读取 Pt AFM `Pt-1.ibw`，用 LightGlue/SuperPoint + RANSAC full affine 配准到外部 SEM/BSE `2-90bse.tif`，再通过 Pt-3 90° 的固定 SEM/IPF 对应关系确认 AFM 与 EBSD/IPF map 的位置关系。
 - AFM IBW 当前读出 `1024 x 1024 x 4`，扫描尺寸 `18 um`，通道为 `HeightRetrace / AmplitudeRetrace / PhaseRetrace / ZSensorRetrace`；脚本自动裁 SEM 底栏、生成多通道 high-pass/edge 特征并选择尺度合理的 affine 候选。
 - 本次 AFM->SEM->IPF 输出保存在 `outputs/pt_afm_sem_ipf_alignment/`：最佳候选 `ZSensorRetrace_hp -> sem_hp`，`11/23` inliers，RMSE `4.70 px`，三晶界位置与 Pt-3 90° IPF/SEM 对齐。
