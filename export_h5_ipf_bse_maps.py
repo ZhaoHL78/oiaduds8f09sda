@@ -61,14 +61,16 @@ def normalize_gray(image: np.ndarray) -> np.ndarray:
 def cubic_ipf_z_colors(orientations: np.ndarray, valid: np.ndarray, ci: np.ndarray) -> np.ndarray:
     """Approximate cubic IPF-Z colors from H5 orientation matrices.
 
-    H5 matrices are used as crystal -> sample.  The sample normal in crystal
-    coordinates is therefore G.T @ ND.  Cubic symmetry is approximated by
-    folding to the standard [001]-[101]-[111] sector before barycentric coloring.
+    EDAX H5 orientation matrices are stored row-major for the OIM IPF color
+    convention used here.  Direct multiplication, G @ ND, reproduces the EDAX
+    IPF-Z export for Pt-3.  Cubic symmetry is approximated by folding the
+    resulting crystal direction to the standard [001]-[101]-[111] sector before
+    barycentric coloring.
     """
     n = orientations.shape[0]
     g = orientations.reshape(n, 3, 3)
     nd_sample = np.array([0.0, 0.0, 1.0])
-    directions = np.einsum("nij,j->ni", np.transpose(g, (0, 2, 1)), nd_sample)
+    directions = np.einsum("nij,j->ni", g, nd_sample)
     directions /= np.linalg.norm(directions, axis=1, keepdims=True) + 1e-12
 
     folded = np.sort(np.abs(directions), axis=1)

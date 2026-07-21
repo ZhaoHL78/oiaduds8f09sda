@@ -178,6 +178,18 @@
   - `pt3_area4_5_7_9_corrected_external_mapping.csv`
   - 每组单独的 EDAX IPF PNG、BSE full PNG 和裁底栏后的 BSE crop PNG。
 
+### 10.2 IPF 颜色与 Kikuchi orientation 对应验证
+
+- H5 中真实的一一对应关系是 `pattern_index = row * ncols + col`；同一个 index 同时索引 `ANG/DATA` 的 orientation/IQ/CI/phase、`OHP/DATA` 的 Kikuchi band，以及 UP2 中对应的 raw Kikuchi pattern。
+- 对 Pt-3 `Area 3-90/180/270/360`，每组均满足 `259 x 291 = 75369 = ANG count = OHP count = UP2 pattern count`。
+- 与 EDAX 导出的 IPF bmp 对比后，H5 orientation 的 IPF-Z 颜色 convention 确认为：
+  - 将 `Orientations` 作为 row-major `G`；
+  - 用 `G @ [0, 0, 1]` 得到样品 ND 在晶体坐标中的方向；
+  - 通过 cubic symmetry 折叠到 `[001]-[101]-[111]` 反极图三角；
+  - 使用 `[001]=red`、`[101]=green`、`[111]=blue` 的 cubic IPF 颜色键。
+- 之前使用 `G.T @ ND` 生成 H5 IPF-Z 会导致颜色和 EDAX 导出图不一致，现已在 `export_h5_ipf_bse_maps.py` 中修正。
+- 当前验证输出目录：`outputs/pt3_ipf_orientation_validation`，包含高分辨率 H5-grid IPF、EDAX/H5 IPF 对比、IPF 三角颜色键、以及选点 IPF -> 三角区 -> 同 index raw Kikuchi 的验证图。
+
 ### 11. UP2 到 EBSD 与 Kikuchi 的逐文件对应
 
 - `export_up2_ebsd_kikuchi_correspondence.py` 以 UP2 文件为主线读取 `E:\ZHL\EBSD-RAW\20251209Pt`。
