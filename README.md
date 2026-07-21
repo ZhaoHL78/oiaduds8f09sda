@@ -190,6 +190,26 @@
 - 之前使用 `G.T @ ND` 生成 H5 IPF-Z 会导致颜色和 EDAX 导出图不一致，现已在 `export_h5_ipf_bse_maps.py` 中修正。
 - 当前验证输出目录：`outputs/pt3_ipf_orientation_validation`，包含高分辨率 H5-grid IPF、EDAX/H5 IPF 对比、IPF 三角颜色键、以及选点 IPF -> 三角区 -> 同 index raw Kikuchi 的验证图。
 
+### 10.3 Pt-3 90° Kikuchi finetune 后重新输出 IPF map
+
+- `export_pt3_area90_finetuned_ipf_map.py` 用于把 Pt-3 90° 这组数据的 Kikuchi finetune 结果重新表达为 EBSD IPF map。
+- 输入 mapping：
+  - H5: `20251209/Pt-3/Area 3-90/OIM Map 1`
+  - UP2: `20251209_Pt-3_Area 4_OIM Map 1.up2`
+  - EDAX IPF reference: `E:\ZHL\ZHL-EDAX\20251209Pt\Pt-3\90.bmp`
+- 先用 `stable_global_pc_orientation_calibration.py` 对 5 个 high-IQ/high-CI Kikuchi 重新做稳定 PC + orientation residual finetune。
+- 本次 90° 结果：
+  - stable global PC residual: `dPC=(-0.002, +0.002, -0.008)`
+  - 5 个 Kikuchi 的 residual orientation 使用稳健中位数作为整张 map 的全局小角度校正：`dR=(-0.25, -0.35, -0.20) deg`
+  - residual 应用方式与球面 finetune 一致：`G_refined = G @ delta.T`
+- 输出 IPF 使用和 EDAX 原图一致的像素尺寸 `714 x 550`；H5 原始 grid 为 `259 x 291`，`Step X=0.2 um`、`Step Y=0.173205 um`，其物理宽高比与 `714/550` 一致。
+- 输出：
+  - `pt3_area90_finetuned_ipf_clean_714x550.png`
+  - `pt3_area90_finetuned_ipf_edax_style_714x550.png`
+  - `pt3_area90_edax_h5_finetuned_ipf_comparison_714x550_panels.png`
+  - `pt3_area90_finetuned_ipf_metadata.json`
+  - `pt3_area90_finetuned_ipf_parameters.csv`
+
 ### 11. UP2 到 EBSD 与 Kikuchi 的逐文件对应
 
 - `export_up2_ebsd_kikuchi_correspondence.py` 以 UP2 文件为主线读取 `E:\ZHL\EBSD-RAW\20251209Pt`。
