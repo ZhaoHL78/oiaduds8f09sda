@@ -263,12 +263,43 @@
   - `per_pattern/<pattern_key>/pc_after_orientation_finetune_scores.csv`
   - `per_pattern/<pattern_key>/single_kikuchi_pc_finetune_summary.csv`
 
+### 15. PC/orientation residual 联合可解释诊断
+
+- `joint_pc_orientation_explainability.py` 用于验证 PC residual 和 orientation residual 的互相代偿关系，并给出可解释性证据，而不是只追求单一 NCC 分数。
+- 默认读取同一组 Pt EBSD mapping：
+  - H5: `D:\EBSD-data\Pt-1\20251209Pt.edaxh5`
+  - specimen: `Pt-3`
+  - area: `Area 3-90`
+  - 默认选择 3 张 high-IQ/high-CI Kikuchi。
+- 每张 Kikuchi 使用 H5 PC/orientation 作为先验，同时读取 H5/OHP 中的软件 Hough Kikuchi band：`rho/theta/width/intensity`。
+- 优化变量为：
+  - `delta PCx, delta PCy, delta PCz`
+  - `delta orientation rx, ry, rz`
+- 目标函数拆成多个可解释分量：
+  - image NCC：整张 pattern 和 master sphere 的 detector-space 匹配。
+  - H5/OHP band center：软件标出的 Kikuchi band 中心线是否落在 master band 响应峰上。
+  - band profile NCC：沿 H5/OHP band 法向的实验 profile 与 master profile 是否一致。
+  - band width consistency：profile 宽度残差是否下降，用于判断 PC-like 非刚性畸变是否真的被改善。
+  - PC prior / orientation prior：限制 PC 和 orientation 不要互相过度代偿。
+- 输出中同时给出 `PC only`、`orientation only` 和 `joint PC+orientation` 三类候选，并用证据标签解释残差来源：
+  - `orientation_dominant_pc_not_supported_by_width`
+  - `mixed_orientation_and_pc_supported`
+  - `pc_dominant_width_distortion_reduced`
+  - `ambiguous_or_already_aligned`
+- 当前 Pt-3 Area 3-90 三张默认结果显示：joint objective 均提升，H5/OHP band center error 明显下降，但 band width error 没有同步下降，因此解释更偏向 orientation residual 主导，而不是 PC residual 主导。
+- 输出：
+  - `joint_pc_orientation_explainability_contact_sheet.png`
+  - `joint_pc_orientation_explainability_summary.csv`
+  - `per_pattern/<pattern_key>/<pattern_key>_joint_pc_orientation_explainability.png`
+  - `per_pattern/<pattern_key>/joint_optimization_trace.csv`
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
 - `diagnose_edax_transform_chain.py`
 - `single_kikuchi_pc_finetune.py`
 - `batch_pt_kikuchi_spherical_calibration.py`
+- `joint_pc_orientation_explainability.py`
 - `pt3_same_face_spherical_calibration.py`
 - `pt_highres_30deg_lightglue_calibration.py`
 - `visualize_edax_projection_sets.py`
@@ -443,6 +474,9 @@ D:\anaconda3\envs\torch\python.exe .\batch_pt_kikuchi_spherical_calibration.py `
 - 将 residual orientation 默认搜索改为高精度小范围：每轴 `-0.5°` 到 `+0.5°`、步长 `0.05°`，避免 orientation 用过大的自由度代偿 PC 误差。
 - 新增 PC/orientation 残差顺序诊断：同时比较 `scan PC -> PC residual -> orientation residual` 与 `scan PC -> orientation residual -> PC residual`，并输出 `*_pc_orientation_order_comparison.png`。
 - 新增 `*_position_pc_orientation_finetune.png` 和 `orientation_finetune_trace.csv`，可视化 map PC、scan-position PC、residual PC、PC+orientation 四个阶段的球面位置和 score 变化。
+- 新增 `joint_pc_orientation_explainability.py`，把 PC/orientation 残差放入同一个联合诊断框架中，并引入 H5/OHP Kikuchi band 的 center/profile/width 约束。
+- 该脚本默认在 Pt-3 `Area 3-90 / OIM Map 1` 中选择 3 张 high-IQ/high-CI Kikuchi，输出 scan、PC-only、orientation-only、joint 四种候选，以及 PC-like / orientation-like evidence。
+- 当前默认结果显示 3 张 joint objective 均提升，H5/OHP band center error 明显下降，但 band width error 没有同步下降，因此 residual interpretation 均为 `orientation_dominant_pc_not_supported_by_width`。
 - 新增本地输出：
   - `outputs/pt_batch_kikuchi_spherical_calibration/pt_kikuchi_spherical_calibration_contact_sheet.png`
   - `outputs/pt_batch_kikuchi_spherical_calibration/pt_kikuchi_spherical_calibration_summary.csv`
@@ -450,6 +484,9 @@ D:\anaconda3\envs\torch\python.exe .\batch_pt_kikuchi_spherical_calibration.py `
   - `outputs/pt_batch_kikuchi_spherical_calibration/per_pattern/*/*_position_pc_orientation_finetune.png`
   - `outputs/pt_batch_kikuchi_spherical_calibration/per_pattern/*/*_pc_orientation_order_comparison.png`
   - `outputs/pt_batch_kikuchi_spherical_calibration/per_pattern/*/orientation_finetune_trace.csv`
+  - `outputs/pt_joint_pc_orientation_explainability/joint_pc_orientation_explainability_contact_sheet.png`
+  - `outputs/pt_joint_pc_orientation_explainability/joint_pc_orientation_explainability_summary.csv`
+  - `outputs/pt_joint_pc_orientation_explainability/per_pattern/*/*_joint_pc_orientation_explainability.png`
 
 ### 2026-07-06
 
