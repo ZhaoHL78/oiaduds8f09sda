@@ -420,15 +420,25 @@
   - AFM 有效配准区域中 `1,035,695` 个像素有 EBSD orientation，对应 AFM 总像素的 `0.988`；
   - 默认应用 Pt-3 90° finetuned orientation residual `(-0.25, -0.35, -0.20) deg`；
   - Scharr normalmap 输出保存在 `outputs/pt_afm_ebsd_scharr_surface_index/`；
+  - 选取一个 AFM/EBSD 有效点，读取同 index 的 UP2 Kikuchi，并叠加 H5/OHP bands，用于检查 EBSD orientation 与 AFM normal 的晶体学耦合；
   - 输出完整 `.npz` 数据，同时导出 stride=4 的 CSV 和 PLY 点云，便于后续统计、3D 可视化或导入外部软件。
 - 输出：
+  - `afm_height_nm.png`
   - `afm_scharr_normalmap.png`
+  - `afm_scharr_normalmap_with_colorbar.png`
+  - `afm_scharr_dz_dcol_um_per_um.png`
+  - `afm_scharr_dz_drow_um_per_um.png`
+  - `afm_normal_tilt_deg.png`
+  - `afm_normal_azimuth_deg.png`
+  - `afm_crystal_surface_index_color.png`
   - `afm_normals_surface_index_overview.png`
   - `ebsd_afm_surface_index_top_view.png`
   - `ebsd_ipf_top_view_sem_frame.png`
   - `surface_index_top_view_ebsd_frame.png`
   - `afm_surface_normals_3d.png`
   - `afm_surface_index_3d.png`
+  - `afm_surface_index_3d_interactive.html`
+  - `kikuchi_ebsd_afm_surface_index_coupling.png`
   - `facet_type_color_key.png`
   - `afm_ebsd_surface_index_data.npz`
   - `afm_ebsd_surface_index_point_cloud_stride4.csv`
@@ -632,6 +642,7 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
   --finetuned-ipf-metadata outputs\pt3_area90_finetuned_ipf_map\pt3_area90_finetuned_ipf_metadata.json `
   --h5 "D:\EBSD project\EBSD-data\Pt-1\20251209Pt.edaxh5" `
   --h5-group "20251209/Pt-3/Area 3-90/OIM Map 1" `
+  --up2 "D:\EBSD project\EBSD-data\Pt-1\20251209_Pt-3_Area 4_OIM Map 1.up2" `
   --output-dir outputs\pt_afm_ebsd_scharr_surface_index
 ```
 
@@ -644,6 +655,7 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 - AFM+EBSD surface-index 当前推荐输出保存在 `outputs/pt_afm_ebsd_scharr_surface_index/`：有效 AFM+EBSD 像素为 `1,035,695`，占 AFM 总像素 `0.988`，并输出完整 `.npz`、stride=4 CSV/PLY 点云、Scharr normalmap、3D surface-index 图和 EBSD top-view overlay。
 - 修正 AFM 法向量计算：新版 `afm_ebsd_surface_index.py` 默认读取 `Pt-1(1).ibw`，直接对 `HeightRetrace` depthmap 使用 Scharr 算子提取 normalmap；AFM->SEM affine 只提供平面旋转，不再把 affine scale/shear 混入高度梯度。
 - Scharr normalmap 版本输出保存在 `outputs/pt_afm_ebsd_scharr_surface_index/`，新增 `afm_scharr_normalmap.png`，并在 `.npz` 中保存 `normals_afm`、`scharr_dz_dcol`、`scharr_dz_drow`。
+- 扩展 AFM+EBSD surface-index 可视化：每个中间结果单独输出图片，normalmap 新增方向 color key，surface-index 新增可旋转 Plotly 3D HTML，并新增 `kikuchi_ebsd_afm_surface_index_coupling.png` 用同 index 的 UP2 Kikuchi + H5/OHP bands 解释 `EBSD orientation + AFM normal -> crystal surface index` 的耦合关系。
 - 新增 `align_pt_afm_sem_ipf.py`，读取 Pt AFM `Pt-1.ibw`，用 LightGlue/SuperPoint + RANSAC full affine 配准到外部 SEM/BSE `2-90bse.tif`，再通过 Pt-3 90° 的固定 SEM/IPF 对应关系确认 AFM 与 EBSD/IPF map 的位置关系。
 - AFM IBW 当前读出 `1024 x 1024 x 4`，扫描尺寸 `18 um`，通道为 `HeightRetrace / AmplitudeRetrace / PhaseRetrace / ZSensorRetrace`；脚本自动裁 SEM 底栏、生成多通道 high-pass/edge 特征并选择尺度合理的 affine 候选。
 - 本次 AFM->SEM->IPF 输出保存在 `outputs/pt_afm_sem_ipf_alignment/`：最佳候选 `ZSensorRetrace_hp -> sem_hp`，`11/23` inliers，RMSE `4.70 px`，三晶界位置与 Pt-3 90° IPF/SEM 对齐。

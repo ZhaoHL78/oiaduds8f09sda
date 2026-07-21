@@ -11,6 +11,7 @@ import cv2
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
+import plotly.graph_objects as go
 from matplotlib.colors import hsv_to_rgb
 from PIL import Image
 from scipy.ndimage import gaussian_filter
@@ -29,6 +30,40 @@ DEFAULT_FINETUNED_IPF_METADATA = (
 DEFAULT_OUTPUT_DIR = Path("outputs") / "pt_afm_ebsd_scharr_surface_index"
 DEFAULT_H5 = Path(r"D:\EBSD project\EBSD-data\Pt-1\20251209Pt.edaxh5")
 DEFAULT_H5_GROUP = "20251209/Pt-3/Area 3-90/OIM Map 1"
+DEFAULT_UP2 = Path(r"D:\EBSD project\EBSD-data\Pt-1\20251209_Pt-3_Area 4_OIM Map 1.up2")
+
+OHP_LINE_COLORS = (
+    "#fee400",
+    "#c800ff",
+    "#0032ff",
+    "#ff7040",
+    "#ff448c",
+    "#7100ff",
+    "#00b6ff",
+    "#76ff54",
+)
+
+HKL_CANDIDATES = np.array(
+    [
+        [1, 0, 0],
+        [1, 1, 0],
+        [1, 1, 1],
+        [2, 1, 0],
+        [2, 1, 1],
+        [2, 2, 1],
+        [3, 1, 0],
+        [3, 1, 1],
+        [3, 2, 0],
+        [3, 2, 1],
+        [3, 3, 1],
+        [4, 1, 0],
+        [4, 1, 1],
+        [4, 2, 1],
+        [4, 3, 1],
+    ],
+    dtype=np.float64,
+)
+HKL_LABELS = tuple(f"{{{int(h)}{int(k)}{int(l)}}}" for h, k, l in HKL_CANDIDATES)
 
 
 @dataclass(frozen=True)
@@ -127,6 +162,91 @@ def normal_direction_rgb(normals: np.ndarray, tilt_ref_deg: float) -> np.ndarray
     return hsv_to_rgb(np.dstack([azimuth, saturation, value])).astype(np.float32)
 
 
+def normal_legend_rgb(size: int = 320) -> np.ndarray:
+    yy, xx = np.mgrid[-1.0:1.0:complex(size), -1.0:1.0:complex(size)]
+    radius = np.sqrt(xx**2 + yy**2)
+    hue = (np.arctan2(yy, xx) + np.pi) / (2.0 * np.pi)
+    saturation = np.clip(radius, 0.0, 1.0)
+    rgb = hsv_to_rgb(np.dstack([hue, saturation, np.full_like(hue, 0.96)])).astype(np.float32)
+    rgba_image = np.zeros((size, size, 4), dtype=np.float32)
+    rgba_image[..., :3] = rgb
+    rgba_image[..., 3] = (radius <= 1.0).astype(np.float32)
+    return rgba_image
+
+
+def save_scalar_image(
+    path: Path,
+    values: np.ndarray,
+    title: str,
+    cmap: str,
+    colorbar_label: str,
+    mask: np.ndarray | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+) -> None:
+    display = np.asarray(values, dtype=np.float32).copy()
+    if mask is not None:
+        display = np.ma.array(display, mask=~mask.astype(bool))
+    fig, ax = plt.subplots(figsize=(7.2, 6.2), dpi=220, constrained_layout=True)
+    im = ax.imshow(display, cmap=cmap, vmin=vmin, vmax=vmax)
+    ax.set_title(title)
+    ax.axis("off")
+    fig.colorbar(im, ax=ax, shrink=0.82, label=colorbar_label)
+    fig.savefig(path, bbox_inches="tight", transparent=True)
+    plt.close(fig)
+
+
+def save_normalmap_with_legend(
+    path: Path,
+    normal_rgb: np.ndarray,
+    title: str,
+    tilt_ref_deg: float,
+) -> None:
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(10.5, 5.8),
+        dpi=220,
+        gridspec_kw={"width_ratios": [3.2, 1.0]},
+        constrained_layout=True,
+    )
+    axes[0].imshow(normal_rgb)
+    axes[0].set_title(title)
+    axes[0].axis("off")
+    legend = normal_legend_rgb()
+    axes[1].imshow(legend, extent=(-1, 1, -1, 1))
+    axes[1].set_title("Normal color key")
+    axes[1].set_aspect("equal")
+    axes[1].axis("off")
+    axes[1].text(0.94, 0.50, "0 deg", transform=axes[1].transAxes, ha="right", va="center", fontsize=8)
+    axes[1].text(0.06, 0.50, "180 deg", transform=axes[1].transAxes, ha="left", va="center", fontsize=8)
+    axes[1].text(0.50, 0.94, "+90 deg", transform=axes[1].transAxes, ha="center", va="top", fontsize=8)
+    axes[1].text(0.50, 0.06, "-90 deg", transform=axes[1].transAxes, ha="center", va="bottom", fontsize=8)
+    axes[1].text(
+        0.50,
+        -0.16,
+        f"hue=azimuth, center=0 deg tilt, rim={tilt_ref_deg:g} deg",
+        transform=axes[1].transAxes,
+        ha="center",
+        va="top",
+        fontsize=8,
+    )
+    fig.savefig(path, bbox_inches="tight", transparent=True)
+    plt.close(fig)
+
+
+def save_rgb_image(path: Path, rgb: np.ndarray, title: str, mask: np.ndarray | None = None) -> None:
+    fig, ax = plt.subplots(figsize=(7.2, 6.2), dpi=220, constrained_layout=True)
+    if mask is None:
+        ax.imshow(np.clip(rgb, 0.0, 1.0))
+    else:
+        ax.imshow(rgba(rgb, mask, alpha=1.0))
+    ax.set_title(title)
+    ax.axis("off")
+    fig.savefig(path, bbox_inches="tight", transparent=True)
+    plt.close(fig)
+
+
 def read_ebsd_map(h5_path: Path, h5_group: str, orientation_delta_deg: tuple[float, float, float] | None) -> EbsdMap:
     with h5py.File(h5_path, "r") as h5:
         group = h5[h5_group]
@@ -216,27 +336,7 @@ def facet_type_rgb(folded: np.ndarray) -> np.ndarray:
 
 
 def nearest_hkl(folded: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    candidates = np.array(
-        [
-            [1, 0, 0],
-            [1, 1, 0],
-            [1, 1, 1],
-            [2, 1, 0],
-            [2, 1, 1],
-            [2, 2, 1],
-            [3, 1, 0],
-            [3, 1, 1],
-            [3, 2, 0],
-            [3, 2, 1],
-            [3, 3, 1],
-            [4, 1, 0],
-            [4, 1, 1],
-            [4, 2, 1],
-            [4, 3, 1],
-        ],
-        dtype=np.float64,
-    )
-    candidate_dirs = candidates / np.linalg.norm(candidates, axis=1, keepdims=True)
+    candidate_dirs = HKL_CANDIDATES / np.linalg.norm(HKL_CANDIDATES, axis=1, keepdims=True)
     flat = folded.reshape(-1, 3).astype(np.float64)
     dots = np.clip(flat @ candidate_dirs.T, -1.0, 1.0)
     best = np.argmax(dots, axis=1)
@@ -373,6 +473,80 @@ def save_3d_surface(
     plt.close(fig)
 
 
+def save_interactive_surface_index(
+    path: Path,
+    height_um: np.ndarray,
+    facet_rgb_map: np.ndarray,
+    valid: np.ndarray,
+    scan_size_um: float,
+    stride: int,
+) -> None:
+    h, w = height_um.shape
+    rows = np.arange(0, h, stride, dtype=np.int32)
+    cols = np.arange(0, w, stride, dtype=np.int32)
+    yy, xx = np.meshgrid(rows, cols, indexing="ij")
+    z = height_um[yy, xx].astype(np.float32) * 1000.0
+    x = xx.astype(np.float32) / max(w - 1, 1) * scan_size_um
+    y = yy.astype(np.float32) / max(h - 1, 1) * scan_size_um
+    colors = np.clip(facet_rgb_map[yy, xx] * 255.0, 0, 255).astype(np.uint8)
+    valid_ds = valid[yy, xx]
+
+    vertex_index = -np.ones(x.shape, dtype=np.int32)
+    flat_valid = valid_ds.ravel()
+    vertex_index.ravel()[flat_valid] = np.arange(int(np.count_nonzero(flat_valid)), dtype=np.int32)
+    vertices = np.column_stack([x.ravel()[flat_valid], y.ravel()[flat_valid], z.ravel()[flat_valid]])
+    vertex_colors = [f"rgb({r},{g},{b})" for r, g, b in colors.reshape(-1, 3)[flat_valid]]
+
+    faces_i: list[int] = []
+    faces_j: list[int] = []
+    faces_k: list[int] = []
+    for row in range(vertex_index.shape[0] - 1):
+        for col in range(vertex_index.shape[1] - 1):
+            a = int(vertex_index[row, col])
+            b = int(vertex_index[row, col + 1])
+            c = int(vertex_index[row + 1, col])
+            d = int(vertex_index[row + 1, col + 1])
+            if min(a, b, c) >= 0:
+                faces_i.append(a)
+                faces_j.append(c)
+                faces_k.append(b)
+            if min(b, c, d) >= 0:
+                faces_i.append(b)
+                faces_j.append(c)
+                faces_k.append(d)
+
+    mesh = go.Mesh3d(
+        x=vertices[:, 0],
+        y=vertices[:, 1],
+        z=vertices[:, 2],
+        i=faces_i,
+        j=faces_j,
+        k=faces_k,
+        vertexcolor=vertex_colors,
+        flatshading=False,
+        lighting=dict(ambient=0.78, diffuse=0.5, specular=0.05, roughness=0.9),
+        lightposition=dict(x=0, y=-20, z=80),
+        name="crystal surface index",
+        showscale=False,
+        hovertemplate="x=%{x:.2f} um<br>y=%{y:.2f} um<br>height=%{z:.1f} nm<extra></extra>",
+    )
+    fig = go.Figure(data=[mesh])
+    fig.update_layout(
+        title="Interactive AFM 3D surface colored by crystal-frame surface index",
+        scene=dict(
+            xaxis_title="AFM x (um)",
+            yaxis_title="AFM y (um)",
+            zaxis_title="height (nm)",
+            aspectmode="manual",
+            aspectratio=dict(x=1, y=1, z=0.16),
+            camera=dict(eye=dict(x=1.35, y=-1.55, z=0.85)),
+        ),
+        margin=dict(l=0, r=0, b=0, t=45),
+        paper_bgcolor="white",
+    )
+    fig.write_html(path, include_plotlyjs="cdn", full_html=True)
+
+
 def save_facet_legend(path: Path) -> None:
     size = 420
     xs = np.linspace(0, 1, size)
@@ -405,26 +579,9 @@ def save_facet_legend(path: Path) -> None:
 
 
 def write_counts(path: Path, hkl_indices: np.ndarray, angle_deg: np.ndarray, valid: np.ndarray) -> None:
-    labels = [
-        "{100}",
-        "{110}",
-        "{111}",
-        "{210}",
-        "{211}",
-        "{221}",
-        "{310}",
-        "{311}",
-        "{320}",
-        "{321}",
-        "{331}",
-        "{410}",
-        "{411}",
-        "{421}",
-        "{431}",
-    ]
     rows = []
     total = int(np.count_nonzero(valid))
-    for idx, label in enumerate(labels):
+    for idx, label in enumerate(HKL_LABELS):
         mask = valid & (hkl_indices == idx)
         count = int(np.count_nonzero(mask))
         rows.append(
@@ -455,7 +612,6 @@ def write_stride_csv(
     scan_size_um: float,
     stride: int,
 ) -> None:
-    labels = ["{100}", "{110}", "{111}", "{210}", "{211}", "{221}", "{310}", "{311}", "{320}", "{321}", "{331}", "{410}", "{411}", "{421}", "{431}"]
     h, w = height_um.shape
     rows_out = []
     valid = mapping["valid"]
@@ -483,7 +639,7 @@ def write_stride_csv(
                     "facet_rgb_r": float(facet_rgb_map[row, col, 0]),
                     "facet_rgb_g": float(facet_rgb_map[row, col, 1]),
                     "facet_rgb_b": float(facet_rgb_map[row, col, 2]),
-                    "nearest_hkl": labels[int(hkl_indices[row, col])],
+                    "nearest_hkl": HKL_LABELS[int(hkl_indices[row, col])],
                     "nearest_hkl_angle_deg": float(hkl_angle_deg[row, col]),
                     "sem_x_px": float(mapping["sem_xy"][row, col, 0]),
                     "sem_y_px": float(mapping["sem_xy"][row, col, 1]),
@@ -535,6 +691,211 @@ def write_ply(
             stream.write(f"{point[0]:.6f} {point[1]:.6f} {point[2]:.9f} {point[3]} {point[4]} {point[5]}\n")
 
 
+def read_up2_pattern(path: Path, index: int) -> tuple[np.ndarray, dict[str, int]]:
+    with path.open("rb") as stream:
+        version = int(np.fromfile(stream, np.uint32, 1)[0])
+        width, height, header_bytes = np.fromfile(stream, np.uint32, 3).astype(np.int64)
+        width = int(width)
+        height = int(height)
+        header_bytes = int(header_bytes)
+        bytes_per_pattern = width * height * np.dtype("<u2").itemsize
+        count = (path.stat().st_size - header_bytes) // bytes_per_pattern
+        if index < 0 or index >= count:
+            raise IndexError(f"UP2 index {index} is outside 0..{count - 1} for {path}")
+        stream.seek(header_bytes + index * bytes_per_pattern)
+        pattern = np.fromfile(stream, dtype="<u2", count=width * height).reshape(height, width)
+    return pattern, {"version": version, "width": width, "height": height, "header_bytes": header_bytes, "count": int(count)}
+
+
+def pattern_display(pattern: np.ndarray) -> np.ndarray:
+    values = pattern.astype(np.float32)
+    finite = values[np.isfinite(values)]
+    lo, hi = np.percentile(finite, [0.4, 99.6])
+    if hi <= lo:
+        lo, hi = float(np.nanmin(finite)), float(np.nanmax(finite))
+    return np.clip((values - lo) / max(hi - lo, 1e-6), 0.0, 1.0).astype(np.float32)
+
+
+def ohp_lines_from_record(
+    record: np.ndarray,
+    circle_size: float,
+    max_rho_fraction: float,
+    output_size: int,
+    rho_sign: float = 1.0,
+) -> list[dict[str, float]]:
+    radius = 0.5 * (output_size - 1)
+    center = radius
+    lines: list[dict[str, float]] = []
+    for band_id, (rho_bin, theta_deg, width, peak) in enumerate(record.reshape(-1, 4)):
+        rho_fraction = ((float(rho_bin) / circle_size) * 2.0 - 1.0) * max_rho_fraction
+        rho = rho_sign * rho_fraction * radius
+        theta = np.deg2rad(float(theta_deg))
+        normal = np.array([np.cos(theta), np.sin(theta)], dtype=np.float64)
+        tangent = np.array([-np.sin(theta), np.cos(theta)], dtype=np.float64)
+        span2 = radius * radius - rho * rho
+        if span2 <= 0:
+            continue
+        span = float(np.sqrt(span2))
+        p0 = rho * normal - span * tangent
+        p1 = rho * normal + span * tangent
+        lines.append(
+            {
+                "band_id": float(band_id),
+                "x0": float(p0[0] + center),
+                "y0": float(p0[1] + center),
+                "x1": float(p1[0] + center),
+                "y1": float(p1[1] + center),
+                "rho_bin": float(rho_bin),
+                "theta_deg": float(theta_deg),
+                "bandwidth": float(width),
+                "peak": float(peak),
+            }
+        )
+    return lines
+
+
+def phase_hkl_families(h5_path: Path, h5_group: str, phase_id: int) -> list[str]:
+    families: list[str] = []
+    with h5py.File(h5_path, "r") as h5:
+        dataset = h5[f"{h5_group}/EBSD/ANG/HEADER/Phase/{phase_id}/HKL Families"]
+        for row in dataset[:]:
+            if int(row["Use in Indexing"]) == 0:
+                continue
+            families.append(f"({int(row['H'])}{int(row['K'])}{int(row['L'])})")
+    return families
+
+
+def read_ohp_lines(h5_path: Path, h5_group: str, index: int, output_size: int) -> list[dict[str, float]]:
+    with h5py.File(h5_path, "r") as h5:
+        group = h5[h5_group]
+        header = group["EBSD/OHP/HEADER"]
+        circle_size = float(np.asarray(header["Circle Size"][()]).reshape(-1)[0])
+        max_rho_fraction = float(np.asarray(header["Maximum Rho Fraction"][()]).reshape(-1)[0])
+        record = group["EBSD/OHP/DATA/DATA"][index].astype(np.float32)
+    return ohp_lines_from_record(record, circle_size, max_rho_fraction, output_size=output_size)
+
+
+def choose_coupling_point(
+    mapping: dict[str, np.ndarray],
+    ebsd: EbsdMap,
+    tilt_deg: np.ndarray,
+) -> tuple[int, int]:
+    valid = mapping["valid"].astype(bool)
+    h, w = valid.shape
+    rows, cols = np.indices((h, w), dtype=np.float32)
+    ebsd_index = mapping["ebsd_index"]
+    ci = ebsd.ci[ebsd_index]
+    iq = ebsd.iq[ebsd_index]
+    core = valid & (rows > 0.08 * h) & (rows < 0.92 * h) & (cols > 0.08 * w) & (cols < 0.92 * w)
+    flat = core & (tilt_deg < 6.0) & (ci > 0.45)
+    candidates = flat if np.count_nonzero(flat) > 0 else core if np.count_nonzero(core) > 0 else valid
+    iq_scale = np.nanpercentile(iq[candidates], 99.0) if np.count_nonzero(candidates) else 1.0
+    dist = np.sqrt(((rows - 0.5 * h) / h) ** 2 + ((cols - 0.5 * w) / w) ** 2)
+    score = 1.8 * ci + 0.45 * np.clip(iq / max(iq_scale, 1e-6), 0.0, 1.5) - 0.65 * dist - 0.025 * tilt_deg
+    score = np.where(candidates, score, -np.inf)
+    flat_index = int(np.nanargmax(score))
+    row, col = np.unravel_index(flat_index, valid.shape)
+    return int(row), int(col)
+
+
+def save_kikuchi_coupling_figure(
+    path: Path,
+    h5_path: Path,
+    h5_group: str,
+    up2_path: Path,
+    selected: dict[str, Any],
+    sem_gray: np.ndarray,
+    ipf_sem: np.ndarray,
+    normal_rgb: np.ndarray,
+    facet_rgb_map: np.ndarray,
+) -> None:
+    pattern, up2_info = read_up2_pattern(up2_path, int(selected["ebsd_index"]))
+    pattern_gray = pattern_display(pattern)
+    lines = read_ohp_lines(h5_path, h5_group, int(selected["ebsd_index"]), output_size=pattern_gray.shape[1])
+
+    sem_rgb = np.dstack([robust_rescale(sem_gray)] * 3)
+    ipf_overlay = np.clip(0.42 * sem_rgb + 0.72 * ipf_sem, 0.0, 1.0)
+    fig, axes = plt.subplots(2, 3, figsize=(14.5, 9.2), dpi=220, constrained_layout=True)
+
+    ax = axes[0, 0]
+    ax.imshow(pattern_gray, cmap="gray", vmin=0, vmax=1)
+    for line in lines:
+        band_id = int(line["band_id"])
+        ax.plot(
+            [line["x0"], line["x1"]],
+            [line["y0"], line["y1"]],
+            color=OHP_LINE_COLORS[band_id % len(OHP_LINE_COLORS)],
+            linewidth=max(1.1, 0.35 * float(line["bandwidth"])),
+            alpha=0.86,
+        )
+        ax.text(
+            0.5 * (line["x0"] + line["x1"]),
+            0.5 * (line["y0"] + line["y1"]),
+            str(band_id + 1),
+            color="white",
+            fontsize=6,
+            ha="center",
+            va="center",
+        )
+    ax.set_title("Raw Kikuchi pattern + H5 OHP bands")
+    ax.axis("off")
+
+    sem_x, sem_y = selected["sem_xy"]
+    axes[0, 1].imshow(ipf_overlay)
+    axes[0, 1].scatter([sem_x], [sem_y], s=100, facecolors="none", edgecolors="black", linewidths=1.7)
+    axes[0, 1].scatter([sem_x], [sem_y], s=16, c="red")
+    axes[0, 1].set_title("Same EBSD index on IPF/SEM")
+    axes[0, 1].axis("off")
+
+    afm_row = int(selected["afm_row"])
+    afm_col = int(selected["afm_col"])
+    axes[0, 2].imshow(normal_rgb)
+    axes[0, 2].scatter([afm_col], [afm_row], s=100, facecolors="none", edgecolors="black", linewidths=1.7)
+    axes[0, 2].scatter([afm_col], [afm_row], s=16, c="red")
+    axes[0, 2].set_title("AFM Scharr normal at the same point")
+    axes[0, 2].axis("off")
+
+    axes[1, 0].imshow(rgba(facet_rgb_map, selected["valid_mask"], alpha=1.0))
+    axes[1, 0].scatter([afm_col], [afm_row], s=100, facecolors="none", edgecolors="black", linewidths=1.7)
+    axes[1, 0].scatter([afm_col], [afm_row], s=16, c="red")
+    axes[1, 0].set_title("Crystal-frame surface index at the same point")
+    axes[1, 0].axis("off")
+
+    axes[1, 1].imshow(normal_legend_rgb(), extent=(-1, 1, -1, 1))
+    axes[1, 1].set_title("Normal color key")
+    axes[1, 1].set_aspect("equal")
+    axes[1, 1].axis("off")
+    axes[1, 1].text(0.94, 0.50, "0 deg", transform=axes[1, 1].transAxes, ha="right", va="center", fontsize=8)
+    axes[1, 1].text(0.06, 0.50, "180 deg", transform=axes[1, 1].transAxes, ha="left", va="center", fontsize=8)
+    axes[1, 1].text(0.50, 0.94, "+90 deg", transform=axes[1, 1].transAxes, ha="center", va="top", fontsize=8)
+    axes[1, 1].text(0.50, 0.06, "-90 deg", transform=axes[1, 1].transAxes, ha="center", va="bottom", fontsize=8)
+
+    phase_families = ", ".join(selected["phase_hkl_families"]) or "not stored"
+    text = (
+        f"UP2: {up2_path.name}\n"
+        f"UP2 resolution/count: {up2_info['width']}x{up2_info['height']} / {up2_info['count']}\n"
+        f"EBSD index: {selected['ebsd_index']}  row={selected['ebsd_row']} col={selected['ebsd_col']}\n"
+        f"IQ={selected['iq']:.1f}, CI={selected['ci']:.3f}, phase={selected['phase']}\n"
+        f"indexed phase HKL families: {phase_families}\n\n"
+        f"n_sample = [{selected['normal_sample'][0]:+.4f}, {selected['normal_sample'][1]:+.4f}, {selected['normal_sample'][2]:+.4f}]\n"
+        f"n_crystal = G @ n_sample\n"
+        f"          = [{selected['normal_crystal'][0]:+.4f}, {selected['normal_crystal'][1]:+.4f}, {selected['normal_crystal'][2]:+.4f}]\n"
+        f"folded cubic [h k l] = [{selected['folded'][0]:.4f}, {selected['folded'][1]:.4f}, {selected['folded'][2]:.4f}]\n"
+        f"nearest surface index = {selected['nearest_hkl']}  angle={selected['nearest_hkl_angle_deg']:.2f} deg\n\n"
+        "Interpretation:\n"
+        "Kikuchi bands fix the local crystal orientation G at this EBSD point.\n"
+        "AFM Scharr gives the local sample-frame surface normal.\n"
+        "Multiplying G with that sample normal expresses the surface normal in\n"
+        "the crystal frame, so its folded direction is the local {hkl} surface index."
+    )
+    axes[1, 2].text(0.0, 1.0, text, va="top", ha="left", family="monospace", fontsize=7.4)
+    axes[1, 2].axis("off")
+
+    fig.suptitle("Kikuchi-indexed EBSD orientation coupled with AFM Scharr normal")
+    fig.savefig(path, bbox_inches="tight", transparent=True)
+    plt.close(fig)
+
+
 def orientation_delta_from_metadata(path: Path | None) -> tuple[float, float, float] | None:
     if path is None or not path.exists():
         return None
@@ -580,12 +941,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     paths = {
         "overview": args.output_dir / "afm_normals_surface_index_overview.png",
+        "height_nm": args.output_dir / "afm_height_nm.png",
         "scharr_normalmap": args.output_dir / "afm_scharr_normalmap.png",
+        "scharr_normalmap_colorbar": args.output_dir / "afm_scharr_normalmap_with_colorbar.png",
+        "scharr_dz_dcol": args.output_dir / "afm_scharr_dz_dcol_um_per_um.png",
+        "scharr_dz_drow": args.output_dir / "afm_scharr_dz_drow_um_per_um.png",
+        "normal_tilt": args.output_dir / "afm_normal_tilt_deg.png",
+        "normal_azimuth": args.output_dir / "afm_normal_azimuth_deg.png",
+        "surface_index_afm": args.output_dir / "afm_crystal_surface_index_color.png",
         "top_view": args.output_dir / "ebsd_afm_surface_index_top_view.png",
         "ebsd_top_view": args.output_dir / "ebsd_ipf_top_view_sem_frame.png",
         "surface_index_top_view": args.output_dir / "surface_index_top_view_ebsd_frame.png",
         "normal_3d": args.output_dir / "afm_surface_normals_3d.png",
         "surface_index_3d": args.output_dir / "afm_surface_index_3d.png",
+        "surface_index_3d_interactive": args.output_dir / "afm_surface_index_3d_interactive.html",
+        "kikuchi_coupling": args.output_dir / "kikuchi_ebsd_afm_surface_index_coupling.png",
         "facet_legend": args.output_dir / "facet_type_color_key.png",
         "data_npz": args.output_dir / "afm_ebsd_surface_index_data.npz",
         "point_csv": args.output_dir / f"afm_ebsd_surface_index_point_cloud_stride{args.export_stride}.csv",
@@ -594,6 +964,50 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "metadata": args.output_dir / "afm_ebsd_surface_index_metadata.json",
     }
     plt.imsave(paths["scharr_normalmap"], normal_rgb)
+    save_scalar_image(paths["height_nm"], normal_data["height_um"] * 1000.0, "AFM height", "viridis", "height (nm)")
+    save_scalar_image(
+        paths["scharr_dz_dcol"],
+        normal_data["scharr_dz_dcol"],
+        "Scharr dz/dx from AFM depthmap",
+        "coolwarm",
+        "dz/dx (um/um)",
+        vmin=float(np.nanpercentile(normal_data["scharr_dz_dcol"], 1.0)),
+        vmax=float(np.nanpercentile(normal_data["scharr_dz_dcol"], 99.0)),
+    )
+    save_scalar_image(
+        paths["scharr_dz_drow"],
+        normal_data["scharr_dz_drow"],
+        "Scharr dz/dy from AFM depthmap",
+        "coolwarm",
+        "dz/dy (um/um)",
+        vmin=float(np.nanpercentile(normal_data["scharr_dz_drow"], 1.0)),
+        vmax=float(np.nanpercentile(normal_data["scharr_dz_drow"], 99.0)),
+    )
+    save_normalmap_with_legend(
+        paths["scharr_normalmap_colorbar"],
+        normal_rgb,
+        "AFM Scharr normalmap",
+        args.tilt_color_ref_deg,
+    )
+    save_scalar_image(
+        paths["normal_tilt"],
+        normal_data["tilt_deg"],
+        "Surface normal tilt from sample Z",
+        "magma",
+        "tilt (deg)",
+        vmin=0.0,
+        vmax=float(np.nanpercentile(normal_data["tilt_deg"], 99.0)),
+    )
+    save_scalar_image(
+        paths["normal_azimuth"],
+        normal_data["azimuth_deg"],
+        "Surface normal azimuth in sample top-view frame",
+        "twilight",
+        "azimuth (deg)",
+        vmin=-180.0,
+        vmax=180.0,
+    )
+    save_rgb_image(paths["surface_index_afm"], facet_rgb_map, "Crystal-frame surface index color in AFM frame", valid)
     save_overview(paths["overview"], normal_data["height_um"], normal_rgb, normal_data["tilt_deg"], facet_rgb_map, valid)
     save_top_view(
         paths["top_view"],
@@ -608,7 +1022,43 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     save_3d_surface(paths["normal_3d"], normal_data["height_um"], normal_rgb, "AFM 3D surface colored by sample-frame normal direction", scan_size_um, args.plot_stride)
     save_3d_surface(paths["surface_index_3d"], normal_data["height_um"], facet_rgb_map, "AFM 3D surface colored by crystal-frame surface index", scan_size_um, args.plot_stride)
+    save_interactive_surface_index(paths["surface_index_3d_interactive"], normal_data["height_um"], facet_rgb_map, valid, scan_size_um, max(args.plot_stride, 6))
     save_facet_legend(paths["facet_legend"])
+
+    selected_row, selected_col = choose_coupling_point(mapping, ebsd, normal_data["tilt_deg"])
+    selected_index = int(mapping["ebsd_index"][selected_row, selected_col])
+    selected_phase = int(ebsd.phase[selected_index])
+    selected = {
+        "afm_row": selected_row,
+        "afm_col": selected_col,
+        "sem_xy": [float(mapping["sem_xy"][selected_row, selected_col, 0]), float(mapping["sem_xy"][selected_row, selected_col, 1])],
+        "ebsd_row": int(mapping["ebsd_row"][selected_row, selected_col]),
+        "ebsd_col": int(mapping["ebsd_col"][selected_row, selected_col]),
+        "ebsd_index": selected_index,
+        "iq": float(ebsd.iq[selected_index]),
+        "ci": float(ebsd.ci[selected_index]),
+        "phase": selected_phase,
+        "normal_sample": [float(x) for x in normals_sample[selected_row, selected_col]],
+        "normal_crystal": [float(x) for x in normals_crystal[selected_row, selected_col]],
+        "folded": [float(x) for x in folded[selected_row, selected_col]],
+        "nearest_hkl": HKL_LABELS[int(hkl_indices[selected_row, selected_col])],
+        "nearest_hkl_angle_deg": float(hkl_angle_deg[selected_row, selected_col]),
+        "phase_hkl_families": phase_hkl_families(args.h5, args.h5_group, selected_phase),
+        "valid_mask": valid,
+    }
+    save_kikuchi_coupling_figure(
+        paths["kikuchi_coupling"],
+        args.h5,
+        args.h5_group,
+        args.up2,
+        selected,
+        sem_image,
+        ipf_sem,
+        normal_rgb,
+        facet_rgb_map,
+    )
+    selected_for_metadata = {key: value for key, value in selected.items() if key != "valid_mask"}
+
     write_counts(paths["hkl_counts"], hkl_indices, hkl_angle_deg, valid)
     write_stride_csv(
         paths["point_csv"],
@@ -657,6 +1107,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "scan_size_um": scan_size_um,
         "h5": str(args.h5),
         "h5_group": args.h5_group,
+        "up2": str(args.up2),
         "alignment_metadata": str(args.alignment_metadata),
         "finetuned_orientation_delta_deg": orientation_delta,
         "normal_operator": "cv2.Scharr(depthmap, scale=1/32), then physical pitch normalization",
@@ -667,6 +1118,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "valid_fraction_of_afm": float(np.mean(valid)),
         "normal_pitch_x_um": normal_data["pitch_x_um"],
         "normal_pitch_y_um": normal_data["pitch_y_um"],
+        "selected_kikuchi_coupling_point": selected_for_metadata,
         "outputs": {key: str(value.resolve()) for key, value in paths.items() if key != "metadata"},
     }
     paths["metadata"].write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -689,6 +1141,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--finetuned-ipf-metadata", type=Path, default=DEFAULT_FINETUNED_IPF_METADATA)
     parser.add_argument("--h5", type=Path, default=DEFAULT_H5)
     parser.add_argument("--h5-group", default=DEFAULT_H5_GROUP)
+    parser.add_argument("--up2", type=Path, default=DEFAULT_UP2)
     parser.add_argument("--height-channel", default="HeightRetrace")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--normal-smooth-sigma-px", type=float, default=0.0)
