@@ -240,16 +240,22 @@
 - 流程：
   - 用已有 `collect_h5_maps / collect_up2_candidates / match_h5_to_up2` 规则自动匹配 H5 mapping 和本地 UP2 文件。
   - 每个 matched mapping 默认挑选 1 张 high-IQ/high-CI Kikuchi；可用 `--patterns-per-map` 和 `--max-patterns` 扩展数量。
-  - 对每张 Kikuchi 执行固定流程：圆形 mask、背景扣除、CLAHE 衬度增强、H5 orientation 投影到 master sphere、局部 PC finetune。
+  - 对每张 Kikuchi 执行固定流程：完整圆形 Kikuchi disk mask、背景扣除、CLAHE 衬度增强、scan-position PC correction、残余 PC finetune、残余 orientation finetune。
+  - 默认 mask 为 centered full disk，半径 `0.49 * min(H, W)`；对 470 x 470 的 Pt-3 pattern，对应圆心 `(234, 234)`、半径 `230`，用于覆盖完整 Kikuchi 圆形区域。
+  - 可用 `--mask-mode estimated` 调用 Hough 圆检测，但 Pt-3 默认不用它，因为局部强 Kikuchi band 可能让 Hough 偏到错误圆心。
+  - 默认 `--pc-initial scan_position`，先根据 EBSD 扫描位置估计电子束作用点造成的 PC 漂移，再以这个 PC 作为局部 finetune 初值。
+  - PC residual finetune 后，固定 refined PC，只搜索一个小角度 residual orientation，默认 `--orientation-bound-deg 1.2`、粗网格 `5^3`、细网格 `5^3`。
   - 不做 cubic symmetry/axis placement；这是 detector-validated 的单张球面匹配校准流程。
-- 当前默认运行在本机 Pt-3 数据上匹配到 5 个 mapping，并输出 5 张详细九宫格校准图。5 张均选择 `edax_g_direct_row_major`，refined score 均高于 original score。
+- 当前默认运行在本机 Pt-3 数据上匹配到 5 个 mapping，并输出 5 张详细 stage-wise 校准图。5 张均选择 `edax_g_direct_row_major`，PC+orientation score 均高于 map-PC score。
 - 输出：
   - `pt_kikuchi_spherical_calibration_contact_sheet.png`
   - `pt_kikuchi_spherical_calibration_summary.csv`
   - `pt_kikuchi_spherical_calibration_summary.md`
   - `per_pattern/<pattern_key>/<pattern_key>_spherical_calibration_overview.png`
+  - `per_pattern/<pattern_key>/<pattern_key>_position_pc_orientation_finetune.png`
   - `per_pattern/<pattern_key>/orientation_scores.csv`
   - `per_pattern/<pattern_key>/pc_finetune_scores.csv`
+  - `per_pattern/<pattern_key>/orientation_finetune_trace.csv`
   - `per_pattern/<pattern_key>/single_kikuchi_pc_finetune_summary.csv`
 
 主要代码：
@@ -425,12 +431,17 @@ D:\anaconda3\envs\torch\python.exe .\batch_pt_kikuchi_spherical_calibration.py `
 
 - 新增 `batch_pt_kikuchi_spherical_calibration.py`，把当前效果最好的单张 Kikuchi 球面匹配校准方案固定成可复用批处理流程。
 - 默认在 `D:\EBSD-data\Pt-1\20251209Pt.edaxh5` 和 `D:\EBSD-data` 中自动匹配 Pt-3 的 H5/UP2 数据，并从每个 matched mapping 中挑选 high-IQ/high-CI Kikuchi。
-- 批处理流程复用 `single_kikuchi_pc_finetune.py` 的圆形 mask、背景扣除、CLAHE、H5 orientation 投影、PC finetune 和九宫格可视化；不做 cubic symmetry 轴线摆放。
-- 已在本机 Pt-3 数据上跑通 5 张 Kikuchi：`Area 3-0 idx=9879`、`Area 3-90 idx=6088`、`Area 3-180 idx=75009`、`Area 3-270 idx=18635`、`Area 3-360 idx=68376`。5 张均自动选择 `edax_g_direct_row_major`，PC finetune 后 combined score 均提升。
+- 批处理流程复用 `single_kikuchi_pc_finetune.py` 的背景扣除、CLAHE、H5 orientation 投影和 PC scoring；批处理层新增完整 disk mask、scan-position PC 初值和 residual orientation finetune，不做 cubic symmetry 轴线摆放。
+- 已在本机 Pt-3 数据上跑通 5 张 Kikuchi：`Area 3-0 idx=9879`、`Area 3-90 idx=6088`、`Area 3-180 idx=75009`、`Area 3-270 idx=18635`、`Area 3-360 idx=68376`。5 张均自动选择 `edax_g_direct_row_major`，PC+orientation score 均高于 map-PC score。
+- 修正 Pt 批处理默认 mask：由偏小的保守圆改为完整 centered Kikuchi disk，默认半径 `0.49 * min(H, W)`，本机 470 x 470 Pt pattern 为 `(cx=234, cy=234, r=230)`。
+- 更新 Pt 批处理 finetune 顺序：先用 scan position 对 PC 做确定性初值校正，再做残余 PC finetune，最后在 refined PC 固定后做小角度 residual orientation finetune。
+- 新增 `*_position_pc_orientation_finetune.png` 和 `orientation_finetune_trace.csv`，可视化 map PC、scan-position PC、residual PC、PC+orientation 四个阶段的球面位置和 score 变化。
 - 新增本地输出：
   - `outputs/pt_batch_kikuchi_spherical_calibration/pt_kikuchi_spherical_calibration_contact_sheet.png`
   - `outputs/pt_batch_kikuchi_spherical_calibration/pt_kikuchi_spherical_calibration_summary.csv`
   - `outputs/pt_batch_kikuchi_spherical_calibration/per_pattern/*/*_spherical_calibration_overview.png`
+  - `outputs/pt_batch_kikuchi_spherical_calibration/per_pattern/*/*_position_pc_orientation_finetune.png`
+  - `outputs/pt_batch_kikuchi_spherical_calibration/per_pattern/*/orientation_finetune_trace.csv`
 
 ### 2026-07-06
 
