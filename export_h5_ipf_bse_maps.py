@@ -58,14 +58,24 @@ def normalize_gray(image: np.ndarray) -> np.ndarray:
     return exposure.rescale_intensity(image, in_range=(lo, hi), out_range=(0.0, 1.0)).astype(np.float32)
 
 
-def cubic_ipf_z_colors(orientations: np.ndarray, valid: np.ndarray, ci: np.ndarray) -> np.ndarray:
-    """Approximate cubic IPF-Z colors from H5 orientation matrices.
+def cubic_ipf_z_colors(
+    orientations: np.ndarray,
+    valid: np.ndarray,
+    ci: np.ndarray | None = None,
+    *,
+    ci_weight: bool = False,
+) -> np.ndarray:
+    """EDAX/OIM-style cubic IPF-Z colors from H5 orientation matrices.
 
     EDAX H5 orientation matrices are stored row-major for the OIM IPF color
     convention used here.  Direct multiplication, G @ ND, reproduces the EDAX
     IPF-Z export for Pt-3.  Cubic symmetry is approximated by folding the
     resulting crystal direction to the standard [001]-[101]-[111] sector before
     barycentric coloring.
+
+    EDAX software IPF exports are orientation-color maps, not CI/IQ-weighted
+    confidence maps.  Keep ``ci_weight=False`` for software-matched IPF images.
+    Enable ``ci_weight`` only for separate quality diagnostics.
     """
     n = orientations.shape[0]
     g = orientations.reshape(n, 3, 3)
@@ -112,8 +122,11 @@ def cubic_ipf_z_colors(orientations: np.ndarray, valid: np.ndarray, ci: np.ndarr
     rgb = np.sqrt(np.clip(rgb, 0.0, 1.0))
     rgb /= rgb.max(axis=1, keepdims=True) + 1e-12
 
-    ci_weight = np.clip(ci.astype(np.float64), 0.0, 1.0)
-    rgb = rgb * (0.35 + 0.65 * ci_weight[:, None])
+    if ci_weight:
+        if ci is None:
+            raise ValueError("ci must be provided when ci_weight=True")
+        ci_values = np.clip(ci.astype(np.float64), 0.0, 1.0)
+        rgb = rgb * (0.35 + 0.65 * ci_values[:, None])
     rgb[~valid] = 0.0
     return rgb.astype(np.float32)
 

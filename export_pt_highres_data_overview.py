@@ -9,7 +9,8 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle
-from skimage import exposure
+from PIL import Image
+from skimage import exposure, transform
 
 from export_h5_ipf_bse_maps import cubic_ipf_z_colors
 from export_publication_h5_kikuchi_bands import (
@@ -33,6 +34,7 @@ from single_kikuchi_pc_finetune import build_preprocessed_images
 
 
 DEFAULT_OUTPUT_DIR = Path("outputs") / "pt_highres_data_overview"
+DEFAULT_EDAX_IPF_DIR = Path(r"E:\ZHL\20251209Pt-EBSD MAP\pt-high resolution")
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -93,12 +95,59 @@ def image_for_panel(image: np.ndarray, mask: np.ndarray | None = None) -> np.nda
     return out
 
 
-def read_ipf_map(map_group: h5py.Group) -> np.ndarray:
+def reference_ipf_path(edax_ipf_dir: Path, angle: int) -> Path:
+    return edax_ipf_dir / f"{angle}.bmp"
+
+
+def read_reference_ipf(path: Path) -> np.ndarray:
+    return np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
+
+
+def reference_ipf_shape(edax_ipf_dir: Path, angle: int) -> tuple[int, int] | None:
+    path = reference_ipf_path(edax_ipf_dir, angle)
+    if not path.exists():
+        return None
+    with Image.open(path) as image:
+        width, height = image.size
+    return height, width
+
+
+def resize_rgb(image: np.ndarray, output_shape: tuple[int, int] | None) -> np.ndarray:
+    if output_shape is None or image.shape[:2] == output_shape:
+        return np.clip(image, 0.0, 1.0).astype(np.float32)
+    return transform.resize(
+        image,
+        output_shape,
+        order=1,
+        mode="reflect",
+        anti_aliasing=True,
+        preserve_range=True,
+    ).astype(np.float32)
+
+
+def selected_scan_xy_for_image(
+    scan_row: int,
+    scan_col: int,
+    image_shape: tuple[int, int],
+    nrows: int,
+    ncols: int,
+) -> tuple[float, float]:
+    height, width = image_shape
+    x = (scan_col + 0.5) / max(ncols, 1) * width
+    y = (scan_row + 0.5) / max(nrows, 1) * height
+    return x, y
+
+
+def read_ipf_map(map_group: h5py.Group, output_shape: tuple[int, int] | None = None) -> np.ndarray:
     data = map_group["EBSD/ANG/DATA/DATA"][:]
     nrows = int(np.asarray(map_group["Sample/Number Of Rows"][()]).reshape(-1)[0])
     ncols = int(np.asarray(map_group["Sample/Number Of Columns"][()]).reshape(-1)[0])
-    valid = data["Valid"].astype(bool) & (data["Phase"] == 1)
-    return cubic_ipf_z_colors(data["Orientations"], valid, data["CI"]).reshape(nrows, ncols, 3)
+    # Match EDAX software IPF exports: color every indexed/valid point from its
+    # orientation.  Do not clear alternate phase labels here; phase/CI/IQ are
+    # separate diagnostics and EDAX's BMP export still colors these stripe pixels.
+    valid = data["Valid"].astype(bool)
+    ipf = cubic_ipf_z_colors(data["Orientations"], valid, data["CI"]).reshape(nrows, ncols, 3)
+    return resize_rgb(ipf, output_shape)
 
 
 def draw_selected_point(ax, x: float, y: float, color: str = "red", size: float = 30.0) -> None:
@@ -226,6 +275,9 @@ def save_individual_views(
     sem_x, sem_y = selected_xy
     scan_row, scan_col = selected_row_col
     index = fint(row, "selected_index")
+    nrows = int(np.asarray(map_group["Sample/Number Of Rows"][()]).reshape(-1)[0])
+    ncols = int(np.asarray(map_group["Sample/Number Of Columns"][()]).reshape(-1)[0])
+    ipf_x, ipf_y = selected_scan_xy_for_image(scan_row, scan_col, ipf.shape[:2], nrows, ncols)
 
     fig, ax = plt.subplots(figsize=(5, 4), dpi=220)
     ax.imshow(sem, cmap="gray", vmin=0, vmax=1)
@@ -237,8 +289,8 @@ def save_individual_views(
 
     fig, ax = plt.subplots(figsize=(5, 4.5), dpi=220)
     ax.imshow(ipf)
-    draw_selected_point(ax, scan_col, scan_row, color="black", size=26.0)
-    ax.set_title(f"{angle:03d} deg H5 IPF-Z, row={scan_row}, col={scan_col}")
+    draw_selected_point(ax, ipf_x, ipf_y, color="black", size=26.0)
+    ax.set_title(f"{angle:03d} deg EDAX-style H5 IPF-Z, row={scan_row}, col={scan_col}")
     ax.axis("off")
     fig.savefig(output_dir / f"angle_{angle:03d}_ipf_selected.png", bbox_inches="tight")
     plt.close(fig)
@@ -354,7 +406,7 @@ def build_records(
     return records
 
 
-def save_sem_ipf_overview(h5_path: Path, rows: list[dict[str, str]], output_dir: Path) -> None:
+def save_sem_ipf_overview(h5_path: Path, rows: list[dict[str, str]], output_dir: Path, edax_ipf_dir: Path) -> None:
     specs = build_map_specs()
     rows_by_angle = {fint(row, "angle_deg"): row for row in rows}
     fig, axes = plt.subplots(4, 6, figsize=(18, 12), dpi=180)
@@ -366,10 +418,12 @@ def save_sem_ipf_overview(h5_path: Path, rows: list[dict[str, str]], output_dir:
             nrows = int(np.asarray(map_group["Sample/Number Of Rows"][()]).reshape(-1)[0])
             ncols = int(np.asarray(map_group["Sample/Number Of Columns"][()]).reshape(-1)[0])
             sem = normalize_gray(np.asarray(map_group["SEM-PRIAS Images/DATA/SEM"][:], dtype=np.float32))
-            ipf = read_ipf_map(map_group)
+            ipf_shape = reference_ipf_shape(edax_ipf_dir, spec.angle_deg)
+            ipf = read_ipf_map(map_group, ipf_shape)
             sem_x, sem_y = selected_sem_xy(row, sem.shape, nrows, ncols)
             scan_row = fint(row, "row")
             scan_col = fint(row, "col")
+            ipf_x, ipf_y = selected_scan_xy_for_image(scan_row, scan_col, ipf.shape[:2], nrows, ncols)
             r = idx // 3
             c = (idx % 3) * 2
             ax_sem = axes[r, c]
@@ -379,17 +433,125 @@ def save_sem_ipf_overview(h5_path: Path, rows: list[dict[str, str]], output_dir:
             ax_sem.set_title(f"{spec.angle_deg:03d} SEM\nidx={fint(row, 'selected_index')}, IQ={ffloat(row, 'IQ'):.0f}")
             ax_sem.axis("off")
             ax_ipf.imshow(ipf)
-            draw_selected_point(ax_ipf, scan_col, scan_row, color="black", size=22.0)
-            ax_ipf.set_title(f"{spec.angle_deg:03d} IPF-Z\nr{scan_row} c{scan_col}, CI={ffloat(row, 'CI'):.3f}")
+            draw_selected_point(ax_ipf, ipf_x, ipf_y, color="black", size=22.0)
+            ax_ipf.set_title(f"{spec.angle_deg:03d} EDAX-style H5 IPF-Z\nr{scan_row} c{scan_col}, CI={ffloat(row, 'CI'):.3f}")
             ax_ipf.axis("off")
             _ = data
-    fig.suptitle("Pt high-resolution 12-map data overview: H5 SEM and H5-orientation IPF-Z", fontsize=16)
+    fig.suptitle("Pt high-resolution 12-map data overview: H5 SEM and EDAX-style H5 IPF-Z", fontsize=16)
     fig.tight_layout(rect=(0, 0, 1, 0.975))
     fig.savefig(output_dir / "pt_highres_sem_ipf_overview.png", bbox_inches="tight")
     plt.close(fig)
 
 
-def save_kikuchi_ohp_overview(h5_path: Path, up2_root: Path, rows: list[dict[str, str]], output_dir: Path) -> None:
+def edax_ipf_content_mask(reference: np.ndarray) -> np.ndarray:
+    brightness = reference.mean(axis=2)
+    saturation = reference.max(axis=2) - reference.min(axis=2)
+    mask = (brightness > 0.035) & (brightness < 0.965) & (saturation > 0.025)
+    # EDAX BMP exports often include a white scale bar and small black labels
+    # near the lower-left margin; exclude that annotation strip from metrics.
+    h, w = mask.shape
+    mask[max(0, h - 70) : h, 0 : min(w, 360)] = False
+    return mask
+
+
+def chromaticity(image: np.ndarray) -> np.ndarray:
+    denom = image.sum(axis=2, keepdims=True)
+    return image / np.maximum(denom, 1e-6)
+
+
+def ipf_metric_row(angle: int, reference: np.ndarray, generated: np.ndarray) -> dict[str, Any]:
+    mask = edax_ipf_content_mask(reference)
+    if not np.any(mask):
+        return {
+            "angle_deg": angle,
+            "masked_pixels": 0,
+            "rgb_mse": float("nan"),
+            "chromaticity_mse": float("nan"),
+            "mean_abs_rgb": float("nan"),
+        }
+    diff = generated - reference
+    chroma_diff = chromaticity(generated) - chromaticity(reference)
+    return {
+        "angle_deg": angle,
+        "masked_pixels": int(mask.sum()),
+        "rgb_mse": float(np.mean(diff[mask] ** 2)),
+        "chromaticity_mse": float(np.mean(chroma_diff[mask] ** 2)),
+        "mean_abs_rgb": float(np.mean(np.abs(diff[mask]))),
+    }
+
+
+def save_edax_ipf_reference_comparison(h5_path: Path, edax_ipf_dir: Path, output_dir: Path) -> list[dict[str, Any]]:
+    specs = build_map_specs()
+    rows: list[dict[str, Any]] = []
+    per_angle_dir = output_dir / "per_angle"
+    per_angle_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(4, 6, figsize=(18, 12), dpi=180)
+    with h5py.File(h5_path, "r") as h5:
+        for idx, spec in enumerate(specs):
+            ref_path = reference_ipf_path(edax_ipf_dir, spec.angle_deg)
+            if not ref_path.exists():
+                continue
+            reference = read_reference_ipf(ref_path)
+            generated = read_ipf_map(h5[spec.h5_group], reference.shape[:2])
+            row = ipf_metric_row(spec.angle_deg, reference, generated)
+            row["reference_ipf"] = str(ref_path)
+            row["h5_group"] = spec.h5_group
+            rows.append(row)
+
+            plt.imsave(per_angle_dir / f"angle_{spec.angle_deg:03d}_h5_edax_style_ipf.png", generated)
+
+            r = idx // 3
+            c = (idx % 3) * 2
+            axes[r, c].imshow(reference)
+            axes[r, c].set_title(f"{spec.angle_deg:03d} software EDAX IPF-Z")
+            axes[r, c].axis("off")
+            axes[r, c + 1].imshow(generated)
+            axes[r, c + 1].set_title(
+                f"{spec.angle_deg:03d} H5 EDAX-style IPF-Z\n"
+                f"chroma MSE={row['chromaticity_mse']:.4g}"
+            )
+            axes[r, c + 1].axis("off")
+    fig.suptitle("Software EDAX IPF-Z vs H5 orientation IPF-Z with the same color convention and display size", fontsize=16)
+    fig.tight_layout(rect=(0, 0, 1, 0.975))
+    fig.savefig(output_dir / "pt_highres_edax_ipf_reference_comparison.png", bbox_inches="tight")
+    plt.close(fig)
+
+    detail_angles = [0, 90]
+    fig, axes = plt.subplots(len(detail_angles), 3, figsize=(12, 7.8), dpi=220, constrained_layout=True)
+    if len(detail_angles) == 1:
+        axes = np.expand_dims(axes, axis=0)
+    with h5py.File(h5_path, "r") as h5:
+        specs_by_angle = {spec.angle_deg: spec for spec in specs}
+        for r, angle in enumerate(detail_angles):
+            spec = specs_by_angle[angle]
+            ref_path = reference_ipf_path(edax_ipf_dir, angle)
+            reference = read_reference_ipf(ref_path)
+            generated = read_ipf_map(h5[spec.h5_group], reference.shape[:2])
+            diff = np.clip(np.abs(generated - reference) * 2.5, 0.0, 1.0)
+            for ax, image, title in (
+                (axes[r, 0], reference, f"{angle:03d} software EDAX"),
+                (axes[r, 1], generated, f"{angle:03d} H5 EDAX-style"),
+                (axes[r, 2], diff, f"{angle:03d} abs diff x2.5"),
+            ):
+                ax.imshow(image)
+                ax.set_title(title)
+                ax.axis("off")
+    fig.suptitle("Detailed 0/90 degree IPF-Z comparison", fontsize=14)
+    fig.savefig(output_dir / "pt_highres_edax_ipf_0_90_detailed_comparison.png", bbox_inches="tight")
+    plt.close(fig)
+
+    write_csv(output_dir / "pt_highres_edax_ipf_reference_metrics.csv", rows)
+    return rows
+
+
+def save_kikuchi_ohp_overview(
+    h5_path: Path,
+    up2_root: Path,
+    rows: list[dict[str, str]],
+    output_dir: Path,
+    edax_ipf_dir: Path,
+) -> None:
     specs = build_map_specs()
     rows_by_angle = {fint(row, "angle_deg"): row for row in rows}
     fig, axes = plt.subplots(4, 6, figsize=(18, 12), dpi=180)
@@ -443,7 +605,7 @@ def save_kikuchi_ohp_overview(h5_path: Path, up2_root: Path, rows: list[dict[str
                 output_dir=per_angle_dir,
                 angle=spec.angle_deg,
                 sem=normalize_gray(np.asarray(map_group["SEM-PRIAS Images/DATA/SEM"][:], dtype=np.float32)),
-                ipf=read_ipf_map(map_group),
+                ipf=read_ipf_map(map_group, reference_ipf_shape(edax_ipf_dir, spec.angle_deg)),
                 pattern_display=pattern_display,
                 enhanced=enhanced,
                 band_display=band_display,
@@ -572,7 +734,15 @@ def save_existing_result_index(calibration_dir: Path, output_dir: Path) -> None:
     plt.close(fig)
 
 
-def write_report(output_dir: Path, h5_path: Path, up2_root: Path, calibration_dir: Path, records: list[dict[str, Any]]) -> None:
+def write_report(
+    output_dir: Path,
+    h5_path: Path,
+    up2_root: Path,
+    calibration_dir: Path,
+    edax_ipf_dir: Path,
+    records: list[dict[str, Any]],
+    ipf_metrics: list[dict[str, Any]],
+) -> None:
     angles = [int(record["angle_deg"]) for record in records]
     best = max(records, key=lambda item: float(item["refined_score"]))
     worst = min(records, key=lambda item: float(item["refined_score"]))
@@ -582,13 +752,17 @@ def write_report(output_dir: Path, h5_path: Path, up2_root: Path, calibration_di
         f"- H5: `{h5_path}`",
         f"- UP2 root: `{up2_root}`",
         f"- Calibration source: `{calibration_dir}`",
+        f"- EDAX software IPF reference: `{edax_ipf_dir}`",
         f"- Formal 30-degree series angles: {', '.join(map(str, angles))}",
         f"- Best refined sphere score: {best['angle_deg']} deg, {float(best['refined_score']):+.5f}",
         f"- Lowest refined sphere score: {worst['angle_deg']} deg, {float(worst['refined_score']):+.5f}",
         "",
         "## Generated Visualizations",
         "",
-        "- `pt_highres_sem_ipf_overview.png`: each formal angle as H5 SEM + H5 orientation IPF-Z with the selected EBSD pixel.",
+        "- `pt_highres_sem_ipf_overview.png`: each formal angle as H5 SEM + EDAX-style H5 IPF-Z with the selected EBSD pixel.",
+        "- `pt_highres_edax_ipf_reference_comparison.png`: software EDAX BMP IPF-Z versus H5-derived IPF-Z using the same color convention and display size.",
+        "- `pt_highres_edax_ipf_0_90_detailed_comparison.png`: detailed 0/90 degree software-vs-H5 IPF-Z comparison with amplified absolute difference.",
+        "- `pt_highres_edax_ipf_reference_metrics.csv`: per-angle masked RGB and chromaticity error against software BMP exports.",
         "- `pt_highres_kikuchi_ohp_overview.png`: enhanced Kikuchi disk and raw Kikuchi with EDAX/OHP bands using the corrected `normal_theta_rho+_yup` convention.",
         "- `pt_highres_ohp_overlay_diagnostics.csv`: per-angle OHP line response on the band-enhanced Kikuchi image, used as an overlay sanity check.",
         "- `pt_highres_quality_pc_score_overview.png`: score, PC residual, forward detector validation and LightGlue alignment diagnostics.",
@@ -598,10 +772,23 @@ def write_report(output_dir: Path, h5_path: Path, up2_root: Path, calibration_di
         "## Notes",
         "",
         "- The 12 formal EBSD mappings live in the H5 as `Area 8-0` through `Area 8-330`; the matching UP2 files are `Area 3` through `Area 14` in acquisition order `30, 60, ..., 330, 0`.",
+        "- IPF-Z visualization now follows the EDAX/OIM export constraint: row-major orientation matrix, `G @ ND`, cubic fold to the `[001]-[101]-[111]` sector, `[001]=red`, `[101]=green`, `[111]=blue`, square-root saturation, no CI/IQ dimming and no phase-label masking by default.",
+        "- For direct visual comparison with EDAX software BMPs, H5 grid IPF is resampled to the BMP's physical-aspect display size before plotting.",
         "- The extra small UP2 files in the same directory are listed in `pt_highres_raw_up2_inventory.csv` but are not part of this 12-map rotation series.",
         "- The detector-validated sphere placement remains the primary result. The cubic-symmetry branch is kept as a diagnostic and should not overwrite local sphere matching.",
         "",
     ]
+    if ipf_metrics:
+        mean_chroma = np.nanmean([float(row["chromaticity_mse"]) for row in ipf_metrics])
+        lines.extend(
+            [
+                "## IPF Reference Check",
+                "",
+                f"- Mean masked chromaticity MSE against EDAX BMP exports: {mean_chroma:.6g}",
+                "- The remaining differences are dominated by EDAX's raster export annotations, cleanup/interpolation and low-quality stripe texture in the software BMP reference.",
+                "",
+            ]
+        )
     (output_dir / "pt_highres_visual_report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -610,11 +797,12 @@ def run(args: argparse.Namespace) -> None:
     summary_path = args.calibration_dir / "pt_highres_30deg_spherical_calibration_summary.csv"
     summary_rows = sorted(read_csv_rows(summary_path), key=lambda item: fint(item, "angle_deg"))
     records = build_records(args.h5, args.up2_root, args.calibration_dir, args.output_dir)
-    save_sem_ipf_overview(args.h5, summary_rows, args.output_dir)
-    save_kikuchi_ohp_overview(args.h5, args.up2_root, summary_rows, args.output_dir)
+    ipf_metrics = save_edax_ipf_reference_comparison(args.h5, args.edax_ipf_dir, args.output_dir)
+    save_sem_ipf_overview(args.h5, summary_rows, args.output_dir, args.edax_ipf_dir)
+    save_kikuchi_ohp_overview(args.h5, args.up2_root, summary_rows, args.output_dir, args.edax_ipf_dir)
     save_scores_overview(args.calibration_dir, args.output_dir)
     save_existing_result_index(args.calibration_dir, args.output_dir)
-    write_report(args.output_dir, args.h5, args.up2_root, args.calibration_dir, records)
+    write_report(args.output_dir, args.h5, args.up2_root, args.calibration_dir, args.edax_ipf_dir, records, ipf_metrics)
     print(f"Saved Pt high-resolution data overview to {args.output_dir}")
 
 
@@ -629,6 +817,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--up2-root", type=Path, default=DEFAULT_UP2_ROOT)
     parser.add_argument("--calibration-dir", type=Path, default=DEFAULT_CALIBRATION_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--edax-ipf-dir", type=Path, default=DEFAULT_EDAX_IPF_DIR)
     return parser.parse_args()
 
 

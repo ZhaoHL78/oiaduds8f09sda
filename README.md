@@ -187,7 +187,9 @@
   - 用 `G @ [0, 0, 1]` 得到样品 ND 在晶体坐标中的方向；
   - 通过 cubic symmetry 折叠到 `[001]-[101]-[111]` 反极图三角；
   - 使用 `[001]=red`、`[101]=green`、`[111]=blue` 的 cubic IPF 颜色键。
-- 之前使用 `G.T @ ND` 生成 H5 IPF-Z 会导致颜色和 EDAX 导出图不一致，现已在 `export_h5_ipf_bse_maps.py` 中修正。
+- EDAX/OIM 软件导出的 IPF-Z 是纯 orientation 颜色图，不把 CI/IQ 作为亮度权重，也不按 phase label 把像素清黑；CI/IQ/phase 只能作为单独质量图或诊断图。
+- 与 EDAX 软件 BMP 直接比较时，H5 grid IPF 需要按照物理步长比例重采样到软件导出的显示尺寸，例如 Pt high-resolution 的 `806 x 720` grid 对应软件 BMP 的 `711 x 550`。
+- 之前使用 `G.T @ ND` 或默认 CI-weighted IPF-Z 会导致颜色和 EDAX 导出图不一致，现已在 `export_h5_ipf_bse_maps.py` 中修正。
 - 当前验证输出目录：`outputs/pt3_ipf_orientation_validation`，包含高分辨率 H5-grid IPF、EDAX/H5 IPF 对比、IPF 三角颜色键、以及选点 IPF -> 三角区 -> 同 index raw Kikuchi 的验证图。
 
 ### 10.3 Pt-3 90° Kikuchi finetune 后重新输出 IPF map
@@ -283,11 +285,16 @@
 
 - `export_pt_highres_data_overview.py` 是 12 组 high-resolution 数据的轻量总览导出入口。
 - 该脚本不重新运行 LightGlue、PC finetune 或球面匹配，只读取原始 H5/UP2 和 `pt_highres_30deg_lightglue_calibration.py` 已生成的 summary。
-- 输出用于快速检查 H5 SEM、H5 orientation IPF-Z、UP2 Kikuchi、OHP band、PC residual 和 score 是否一一对应。
+- 输出用于快速检查 H5 SEM、EDAX-style H5 IPF-Z、UP2 Kikuchi、OHP band、PC residual 和 score 是否一一对应。
+- IPF-Z 输出默认使用 EDAX/OIM 约束：row-major `G @ ND`、cubic `[001]-[101]-[111]` fold、`[001]=red/[101]=green/[111]=blue`、sqrt saturation、无 CI/IQ dimming、无 phase mask，并按 EDAX BMP reference 的物理显示尺寸重采样。
+- 默认读取 `E:\ZHL\20251209Pt-EBSD MAP\pt-high resolution` 中的 `0.bmp, 30.bmp, ..., 330.bmp` 作为软件 reference，对比 H5 重新生成的 IPF-Z。
 - OHP band overlay 使用已修正的 `normal_theta_rho+_yup` 约定，与 `export_publication_h5_kikuchi_bands.py` 保持一致。
 - 同时输出 `pt_highres_ohp_overlay_diagnostics.csv`，记录每张图的 OHP 线在 band-enhanced Kikuchi 上的响应，用作 H5/OHP/UP2 对应关系的 sanity check。
 - 输出：
   - `pt_highres_sem_ipf_overview.png`
+  - `pt_highres_edax_ipf_reference_comparison.png`
+  - `pt_highres_edax_ipf_0_90_detailed_comparison.png`
+  - `pt_highres_edax_ipf_reference_metrics.csv`
   - `pt_highres_kikuchi_ohp_overview.png`
   - `pt_highres_quality_pc_score_overview.png`
   - `pt_highres_existing_calibration_result_index.png`
@@ -679,6 +686,7 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 
 - 新增 `export_pt_highres_data_overview.py`，用于把 Pt high-resolution 12 组 30° EBSD 数据的 H5/UP2/index/SEM/IPF/Kikuchi/OHP/PC/score 统一导出成总览图和索引表。
 - 该入口只做可视化和质检，不重新运行 LightGlue 配准或球面匹配；high-res calibration 本身已在修正 UP2 映射后重新运行。
+- 修正通用 IPF-Z 可视化约束：默认输出 EDAX/OIM-style orientation IPF，不再用 CI/IQ 权重压暗，也不按 phase label 清黑；Pt high-resolution 总览现在会读取软件导出的 `0.bmp, 30.bmp, ..., 330.bmp`，将 H5 orientation IPF 重采样到同一物理显示尺寸，并输出软件-vs-H5 对比图和 chromaticity error 表。
 - 修正 Pt high-resolution 的 H5/UP2 对应关系：正式 12 组 UP2 为 `Area 3` 到 `Area 14`，每组 `470 x 470 x 580320`，但对应角度按真实采集顺序为 `30°, 60°, ..., 330°, 0°`，不是 `0°, 30°, ...`。
 - `export_pt_highres_data_overview.py` 新增 `pt_highres_ohp_overlay_diagnostics.csv`，每次输出 OHP overlay 时同步记录 OHP 线在 band-enhanced Kikuchi 上的响应，避免 H5/OHP 与 UP2 pattern 错位时只靠肉眼发现。
 
