@@ -214,16 +214,17 @@
 
 ### 10.4 Pt high-resolution 60° AFM/SEM/IPF 对应
 
-- `align_pt_highres60_afm.py` 是当前推荐的 Pt high-resolution 60° AFM 对齐流程。
-- 坐标约定已修正：H5 内 `SEM-PRIAS Images/DATA/SEM` 与 EDAX 软件导出的 `60.bmp` IPF-Z 行方向相反，因此默认先对 H5 SEM 做 `flipud`，再进入 IPF/SEM 同帧可视化。
-- AFM 配准不再直接使用 IPF 色彩图做几何基准；最终 accepted transform 使用 AFM height Scharr/低频晶界 feature 与 flipped SEM grain-boundary feature 做中心约束配准。
-- LightGlue/SuperPoint 只作为可选诊断，默认脚本仍可开启；如果只需要物理尺度和晶界约束下的稳定输出，可用 `--skip-lightglue`。
-- 当前输出目录：`outputs/pt_highres60_afm_alignment_corrected`，关键图包括：
-  - `ebsd60_sem_flipud_ipf_check.png`
-  - `afm_sem_grain_boundary_overlay_corrected.png`
-  - `afm_scharr_normalmap_with_colorbar.png`
-  - `afm_normalmap_overlay_on_ebsd60_sem.png`
-  - `afm_normalmap_overlay_on_ebsd60_ipf.png`
+- `align_pt_highres60_afm_same_fov.py` 是当前推荐的 Pt high-resolution 60° AFM 对齐流程。
+- 修正后的物理约束是：AFM 和 H5 SEM 是近似同一视场，不能使用 SEM/IPF 图上的 scale bar 推导 AFM 覆盖大小。
+- AFM `.ibw` 直接读出的数组方向与 AFM 软件截图不同；当前默认先做 `rot90`，得到与软件显示一致的 AFM 方向。
+- AFM 配准目标是 H5 `SEM-PRIAS Images/DATA/SEM` 的 raw row order。H5 SEM 只有在进入 EDAX IPF-Z frame 时才做 `flipud`。
+- 默认同视场配准参数为 `AFM rot90 -> resize to SEM -> center rotation +10 deg`；`stretch-x/stretch-y` 和平移参数显式保留，用于表示 SEM 在 70° tilt 后做简单 tilt correction 带来的单轴拉伸/残余畸变。
+- 当前输出目录：`outputs/pt_highres60_afm_same_fov_alignment`，关键图包括：
+  - `afm_sem_same_fov_orientation_check.png`
+  - `afm_sem_ipf_same_fov_alignment_overview.png`
+  - `afm_scharr_normalmap_rot90_with_colorbar.png`
+  - `afm_height_same_fov_warped_to_raw_sem.png`
+  - `afm_height_same_fov_warped_to_ipf_frame.png`
 
 ### 11. UP2 到 EBSD 与 Kikuchi 的逐文件对应
 
@@ -441,40 +442,30 @@
 
 ### 17.1 Pt high-resolution 60° AFM -> EBSD 对齐与 normalmap
 
-- `align_pt_highres60_afm.py` 用于把 `D:\EBSD project\3d数据\pt-afm\Pt-2high resolution.ibw` 配准到 Pt high-resolution 的 60° EBSD 数据：
+- `align_pt_highres60_afm_same_fov.py` 用于把 `D:\EBSD project\3d数据\pt-afm\Pt-2high resolution.ibw` 配准到 Pt high-resolution 的 60° EBSD 数据：
   - H5: `E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217.edaxh5`
   - H5 mapping: `20251217/Pt foil-high resolution/Area 8-60/OIM Map 1`
   - EDAX IPF reference: `E:\ZHL\20251209Pt-EBSD MAP\pt-high resolution\60.bmp`
-- AFM 读出为 `1024 x 1024`，通道为 `HeightRetrace / AmplitudeRetrace / PhaseRetrace / ZSensorRetrace`，扫描尺寸 `70 um`。
-- 配准使用 H5 内置 60° SEM，不使用外部 BSE。H5 SEM 与 EDAX 软件 IPF-Z 的 row direction 相反，因此默认对 SEM 做 `flipud` 后再进入 IPF frame。
-- AFM 不再直接配 IPF 色彩图。最终几何以 flipped SEM grain-boundary feature 为基准，使用 AFM height grain-boundary feature、中心接近先验和物理尺度先验做受限 NCC 配准；LightGlue/SuperPoint 只保留为可选诊断。
-- AFM normalmap 用 `HeightRetrace` 做平面扣除后，通过 Scharr 算子提取 `dz/dx`、`dz/dy`，构造 `[-dz/dx, -dz/dy, 1]`，再只使用 AFM->SEM affine 的平面旋转部分把 normalmap 表达到 EBSD top-view frame。affine 的 scale/shear 不进入高度梯度。
-- 当前本机 corrected 结果：`sem_flip_y_to_match_ipf=True`，最终受限晶界配准为 `scale=0.1333`、`rotation=+40.0 deg`、中心误差 `34.6 px`、grain-boundary NCC `0.202`；物理预期平均尺度约 `0.145`。
+- AFM 读出为 `1024 x 1024`，通道为 `HeightRetrace / AmplitudeRetrace / PhaseRetrace / ZSensorRetrace`，扫描尺寸 `70 um`；SEM/IPF 图上的 scale bar 不参与配准。
+- AFM `.ibw` 需要先做 `rot90` 才与 AFM 软件截图方向一致。配准目标使用 H5 SEM raw row order；进入 EDAX IPF-Z frame 时，再对 SEM/AFM overlay 一起 `flipud`。
+- 默认配准是同视场模型：`AFM rot90 -> resize 到 SEM 尺寸 -> 围绕中心逆时针 10°`。`stretch-x/stretch-y` 和平移保留为显式参数，用于表达 70° SEM tilt correction 的单轴拉伸和残余畸变，但不再让 scale bar 决定 AFM 覆盖大小。
+- AFM normalmap 用 `HeightRetrace` 做平面扣除后，通过 Scharr 算子提取 `dz/dx`、`dz/dy`，构造 `[-dz/dx, -dz/dy, 1]`，再使用同视场 affine 的平面旋转部分把 normalmap 表达到 SEM/IPF frame。affine 的 scale/shear 不进入高度梯度。
+- 当前输出目录：`outputs/pt_highres60_afm_same_fov_alignment`。
 - 输出：
-  - `ebsd60_sem_h5_raw_row_order.png`
+  - `afm_sem_same_fov_orientation_check.png`
+  - `afm_sem_ipf_same_fov_alignment_overview.png`
+  - `ebsd60_sem_h5_raw_afm_alignment_frame.png`
   - `ebsd60_sem_h5_flipud_ipf_frame.png`
-  - `ebsd60_sem_flipud_ipf_check.png`
-  - `ebsd60_sem_flipud_grain_boundary_feature.png`
-  - `afm_height_grain_boundary_feature.png`
-  - `afm_sem_grain_boundary_overlay_corrected.png`
-  - `ebsd60_ipf_edax_style_sem_frame.png`
-  - `afm_height_nm.png`
-  - `afm_amplitude.png`
-  - `afm_scharr_normalmap.png`
-  - `afm_scharr_normalmap_with_colorbar.png`
-  - `afm_normal_tilt_deg.png`
-  - `afm_normal_azimuth_deg.png`
-  - `afm_scharr_dz_dx_um_per_um.png`
-  - `afm_scharr_dz_dy_um_per_um.png`
-  - `candidate_normalmap_overlay_previews.png`
-  - `afm_height_warped_to_ebsd60_sem.png`
-  - `afm_amplitude_warped_to_ebsd60_sem.png`
-  - `afm_normalmap_warped_to_ebsd60_sem.png`
-  - `afm_height_overlay_on_ebsd60_sem.png`
-  - `afm_normalmap_overlay_on_ebsd60_sem.png`
-  - `afm_normalmap_overlay_on_ebsd60_ipf.png`
-  - `pt_highres60_afm_alignment_data.npz`
-  - `pt_highres60_afm_alignment_metadata.json`
+  - `ebsd60_ipf_edax_reference.png`
+  - `afm_height_rot90_software_orientation.png`
+  - `afm_height_same_fov_warped_to_raw_sem.png`
+  - `afm_height_same_fov_warped_to_ipf_frame.png`
+  - `afm_scharr_normalmap_rot90.png`
+  - `afm_scharr_normalmap_rot90_with_colorbar.png`
+  - `afm_normalmap_same_fov_warped_to_raw_sem.png`
+  - `afm_normalmap_same_fov_warped_to_ipf_frame.png`
+  - `pt_highres60_afm_same_fov_alignment_data.npz`
+  - `pt_highres60_afm_same_fov_alignment_metadata.json`
 
 ### 18. AFM 法向量与 EBSD 表面晶面指数图
 
@@ -750,7 +741,7 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 - 修正 Pt high-resolution 的 H5/UP2 对应关系：正式 12 组 UP2 为 `Area 3` 到 `Area 14`，每组 `470 x 470 x 580320`，但对应角度按真实采集顺序为 `30°, 60°, ..., 330°, 0°`，不是 `0°, 30°, ...`。
 - `export_pt_highres_data_overview.py` 新增 `pt_highres_ohp_overlay_diagnostics.csv`，每次输出 OHP overlay 时同步记录 OHP 线在 band-enhanced Kikuchi 上的响应，避免 H5/OHP 与 UP2 pattern 错位时只靠肉眼发现。
 - 新增 `align_pt_highres60_afm.py`，把 `Pt-2high resolution.ibw` 配准到 Pt high-resolution 60° EBSD 的 H5 SEM/IPF frame，并单独输出 AFM height、amplitude、Scharr normalmap、normalmap color key、LightGlue matches、候选 overlay 预览和 AFM->EBSD60 overlay。
-- 修正 Pt high-resolution 60° AFM/SEM/IPF 对齐：H5 SEM 默认 `flipud` 后才与 EDAX IPF-Z 对应；AFM 几何基准改为 flipped SEM grain-boundary feature，不再直接用 IPF 色块边界配准。
+- 修正 Pt high-resolution 60° AFM/SEM/IPF 对齐：旧版误用 SEM/IPF scale bar 和 EBSD 物理宽度，把 AFM 缩成小块。新版 `align_pt_highres60_afm_same_fov.py` 使用 AFM/SEM 同视场先验，先把 AFM `rot90` 到软件显示方向，再与 H5 SEM raw row order 做中心旋转约 10° 的同视场仿射；只有进入 EDAX IPF frame 时才 `flipud`。
 
 ### 2026-07-21
 
