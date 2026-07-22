@@ -116,8 +116,14 @@ class PairAlignment:
 def build_map_specs() -> list[HighResMapSpec]:
     cmap = plt.get_cmap("turbo")
     specs: list[HighResMapSpec] = []
+    # Do not infer the UP2 file from the angle order here.  In this data set
+    # the H5 acquisition sequence is 30, 60, ..., 330, 0 degrees, while the
+    # full-resolution UP2 files are Area 3, Area 4, ..., Area 14 in acquisition
+    # order.  A naive 0->Area3 mapping silently pairs OHP bands from one H5 map
+    # with a Kikuchi pattern from another UP2 file.
+    up2_area_by_angle = {angle: 3 + i for i, angle in enumerate(list(range(30, 360, 30)) + [0])}
     for index, angle in enumerate(range(0, 360, 30)):
-        area_number = 3 + index
+        area_number = up2_area_by_angle[angle]
         specs.append(
             HighResMapSpec(
                 label=f"Pt high-res {angle} deg",

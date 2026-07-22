@@ -234,7 +234,8 @@
 
 - `pt_highres_30deg_lightglue_calibration.py` 读取 `E:\ZHL\EBSD-RAW\20251217Pt-high resolution` 中的 12 组高分辨率 EBSD：
   - H5 mapping: `Area 8-0, 8-30, ..., 8-330 / OIM Map 1`
-  - UP2: `Area 3` 到 `Area 14`，对应 0° 到 330°。
+  - UP2: `Area 3` 到 `Area 14`，按真实采集顺序对应 `30°, 60°, ..., 330°, 0°`。
+- 注意：这批数据不能用自然角度顺序推断 `0° -> Area 3`。H5 时间戳显示采集顺序为 `30,60,...,330,0`，若映射错位会导致 Kikuchi pattern 与 H5/OHP band 明显不匹配。
 - 使用 LightGlue + SuperPoint 对相邻角度 SEM 做配准：`30 -> 0`、`60 -> 30`、...、`330 -> 300`。
 - 每一对配准先按已知 30° in-plane rotation 预旋转，再用 LightGlue/SuperPoint 匹配和 RANSAC affine refinement，最后把所有 SEM transform 串联到 0° 坐标系。
 - 在共同有效区域内自动选择一个远离晶界、IQ/CI 综合较高的同一物理位置点，并反投影到每个 EBSD mapping 的 raw SEM/grid index。
@@ -250,8 +251,9 @@
   - 单独绘制 PC 在 pattern 上的位置和 PC 在 master sphere 上的晶体学锚点。
 - 当前本机运行结果中，SEM 相邻配准全部使用 `lightglue_superpoint`，没有使用 fallback；各对 RANSAC inlier 约 48-81 个，RMSE 约 2.0-2.6 px。
 - 当前固定流程来自 `21dce0a` 和 `4e9e21b` 的可视化/对称性思路，但球面匹配本身回到更早的 forward detector validation：最终匹配位置不由 cubic branch 强行改写。
-- 当前 12 组运行的共同 SEM 参考点为 `(342.07, 275.83)`；cubic symmetry placement 诊断为 `score=10.73288`、`angle30=22.82°`、共同轴约为 `(0.873, 0.488, -0.017)`。
-- 当前 forward detector validation 表明 cubic branch 不是所有 pattern 的最佳匹配：5/12 张 detector-space 分数低于 base/refined placement，其中 120° 从 `0.03088` 降到 `0.01455`。因此 cubic 输出只作为诊断，不作为最终 sphere matching 结果。
+- 当前 12 组运行的共同 SEM 参考点为 `(342.07, 275.83)`；修正 H5/UP2 对应关系后，detector-validated refined score 为约 `0.218-0.340`。
+- 当前 cubic symmetry placement 诊断为 `score=9.21718`、`angle30=30.16°`、共同轴约为 `(0.385, -0.295, 0.874)`。
+- 当前 forward detector validation 表明 cubic branch 不是所有 pattern 的最佳匹配：4/12 张 detector-space 分数低于 base/refined placement，其中 180° 从 `0.34024` 降到 `0.32439`。因此 cubic 输出只作为诊断，不作为最终 sphere matching 结果。
 - 输出：
   - `pt_highres_sem_lightglue_alignment_overview.png`
   - `pt_highres_same_point_selection.png`
@@ -283,6 +285,7 @@
 - 该脚本不重新运行 LightGlue、PC finetune 或球面匹配，只读取原始 H5/UP2 和 `pt_highres_30deg_lightglue_calibration.py` 已生成的 summary。
 - 输出用于快速检查 H5 SEM、H5 orientation IPF-Z、UP2 Kikuchi、OHP band、PC residual 和 score 是否一一对应。
 - OHP band overlay 使用已修正的 `normal_theta_rho+_yup` 约定，与 `export_publication_h5_kikuchi_bands.py` 保持一致。
+- 同时输出 `pt_highres_ohp_overlay_diagnostics.csv`，记录每张图的 OHP 线在 band-enhanced Kikuchi 上的响应，用作 H5/OHP/UP2 对应关系的 sanity check。
 - 输出：
   - `pt_highres_sem_ipf_overview.png`
   - `pt_highres_kikuchi_ohp_overview.png`
@@ -290,6 +293,7 @@
   - `pt_highres_existing_calibration_result_index.png`
   - `pt_highres_12map_visual_inventory.csv`
   - `pt_highres_raw_up2_inventory.csv`
+  - `pt_highres_ohp_overlay_diagnostics.csv`
   - `per_angle/angle_***_*.png`
 
 ### 14. Pt Kikuchi 批量球面匹配校准固定流程
@@ -674,8 +678,9 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 ### 2026-07-22
 
 - 新增 `export_pt_highres_data_overview.py`，用于把 Pt high-resolution 12 组 30° EBSD 数据的 H5/UP2/index/SEM/IPF/Kikuchi/OHP/PC/score 统一导出成总览图和索引表。
-- 该入口只做可视化和质检，不重新运行 LightGlue 配准或球面匹配，避免改变已验证的 high-res calibration 结果。
-- 当前本机输出保存在 `outputs/pt_highres_data_overview/`；`pt_highres_raw_up2_inventory.csv` 确认正式 12 组 UP2 为 `Area 3` 到 `Area 14`，每组 `470 x 470 x 580320`，对应 H5 `Area 8-0` 到 `Area 8-330`。
+- 该入口只做可视化和质检，不重新运行 LightGlue 配准或球面匹配；high-res calibration 本身已在修正 UP2 映射后重新运行。
+- 修正 Pt high-resolution 的 H5/UP2 对应关系：正式 12 组 UP2 为 `Area 3` 到 `Area 14`，每组 `470 x 470 x 580320`，但对应角度按真实采集顺序为 `30°, 60°, ..., 330°, 0°`，不是 `0°, 30°, ...`。
+- `export_pt_highres_data_overview.py` 新增 `pt_highres_ohp_overlay_diagnostics.csv`，每次输出 OHP overlay 时同步记录 OHP 线在 band-enhanced Kikuchi 上的响应，避免 H5/OHP 与 UP2 pattern 错位时只靠肉眼发现。
 
 ### 2026-07-21
 

@@ -148,6 +148,66 @@ def draw_ohp_bands(ax, map_group: h5py.Group, index: int, shape: tuple[int, int]
     return count
 
 
+def sample_segment_response(image: np.ndarray, segment, half_width: int = 3) -> float:
+    height, width = image.shape
+    row0, col0, row1, col1 = segment.row0, segment.col0, segment.row1, segment.col1
+    samples = max(2, int(np.hypot(row1 - row0, col1 - col0)))
+    rows = np.linspace(row0, row1, samples)
+    cols = np.linspace(col0, col1, samples)
+    dcol = col1 - col0
+    drow = row1 - row0
+    norm = np.hypot(drow, dcol) + 1e-9
+    ncol = -drow / norm
+    nrow = dcol / norm
+    values: list[np.ndarray] = []
+    for offset in range(-half_width, half_width + 1):
+        cc = np.round(cols + ncol * offset).astype(int)
+        rr = np.round(rows + nrow * offset).astype(int)
+        ok = (rr >= 0) & (rr < height) & (cc >= 0) & (cc < width)
+        if np.any(ok):
+            values.append(image[rr[ok], cc[ok]])
+    if not values:
+        return float("nan")
+    return float(np.mean(np.concatenate(values)))
+
+
+def score_ohp_alignment(map_group: h5py.Group, index: int, band_image: np.ndarray, mask: np.ndarray) -> dict[str, float]:
+    height, width = band_image.shape
+    header = read_ohp_header(map_group)
+    bands = read_bands(map_group, index)
+    line_values: list[float] = []
+    weights: list[float] = []
+    for band_order, band in enumerate(bands):
+        segment = line_segment_from_band(
+            band=band,
+            header=header,
+            height=height,
+            width=width,
+            variant=PUBLICATION_VARIANT,
+            band_index=band_order,
+        )
+        if segment is None:
+            continue
+        value = sample_segment_response(band_image, segment)
+        if np.isfinite(value):
+            line_values.append(value)
+            weights.append(max(float(band.intensity), 1e-6))
+    background = float(np.mean(band_image[mask])) if np.any(mask) else float(np.mean(band_image))
+    if line_values:
+        weighted = float(np.average(line_values, weights=weights))
+        unweighted = float(np.mean(line_values))
+    else:
+        weighted = float("nan")
+        unweighted = float("nan")
+    return {
+        "ohp_band_count": float(len(line_values)),
+        "ohp_line_response": weighted,
+        "ohp_line_response_unweighted": unweighted,
+        "ohp_background_response": background,
+        "ohp_response_minus_background": weighted - background if np.isfinite(weighted) else float("nan"),
+    }
+
+
 def save_individual_views(
     output_dir: Path,
     angle: int,
@@ -238,6 +298,8 @@ def build_records(
 
     records: list[dict[str, Any]] = []
     with h5py.File(h5_path, "r") as h5:
+        acquisition_order_angles = list(range(30, 360, 30)) + [0]
+        acquisition_order_by_angle = {angle: order for order, angle in enumerate(acquisition_order_angles, start=1)}
         for spec in specs:
             row = row_by_angle.get(spec.angle_deg)
             if row is None:
@@ -262,6 +324,9 @@ def build_records(
                     "h5_ang_count": data.shape[0],
                     "h5_sem_height": sem.shape[0],
                     "h5_sem_width": sem.shape[1],
+                    "h5_acquisition_order": acquisition_order_by_angle[spec.angle_deg],
+                    "h5_timestamp_ticks": int(np.asarray(map_group.attrs.get("TimeStamp", [0])).reshape(-1)[0]),
+                    "up2_name": up2_path.name,
                     "up2_width": up2_info.width,
                     "up2_height": up2_info.height,
                     "up2_count": up2_info.count,
@@ -328,6 +393,7 @@ def save_kikuchi_ohp_overview(h5_path: Path, up2_root: Path, rows: list[dict[str
     specs = build_map_specs()
     rows_by_angle = {fint(row, "angle_deg"): row for row in rows}
     fig, axes = plt.subplots(4, 6, figsize=(18, 12), dpi=180)
+    diagnostics: list[dict[str, Any]] = []
     per_angle_dir = output_dir / "per_angle"
     with h5py.File(h5_path, "r") as h5:
         for idx, spec in enumerate(specs):
@@ -340,6 +406,17 @@ def save_kikuchi_ohp_overview(h5_path: Path, up2_root: Path, rows: list[dict[str
             images = build_preprocessed_images(pattern, mask=mask)
             enhanced = images["enhanced"]
             band_display = exposure.rescale_intensity(images["band"], in_range="image", out_range=(0.0, 1.0))
+            ohp_diag = score_ohp_alignment(map_group, index, band_display, mask)
+            diagnostics.append(
+                {
+                    "angle_deg": spec.angle_deg,
+                    "h5_group": spec.h5_group,
+                    "up2_name": spec.up2_name,
+                    "selected_index": index,
+                    "ohp_line_variant": PUBLICATION_VARIANT.name,
+                    **ohp_diag,
+                }
+            )
             r = idx // 3
             c = (idx % 3) * 2
             ax_kikuchi = axes[r, c]
@@ -356,7 +433,10 @@ def save_kikuchi_ohp_overview(h5_path: Path, up2_root: Path, rows: list[dict[str
             ax_ohp.imshow(pattern_display, cmap="gray", vmin=0, vmax=1, alpha=mask.astype(np.float32))
             band_count = draw_ohp_bands(ax_ohp, map_group, index, pattern.shape)
             draw_pc_markers(ax_ohp, row, pattern.shape[1], pattern.shape[0])
-            ax_ohp.set_title(f"{spec.angle_deg:03d} raw + OHP bands\nbands={band_count}, score={ffloat(row, 'refined_score'):+.4f}")
+            ax_ohp.set_title(
+                f"{spec.angle_deg:03d} raw + OHP bands\n"
+                f"bands={band_count}, OHP resp-bg={ohp_diag['ohp_response_minus_background']:+.3f}"
+            )
             ax_ohp.axis("off")
 
             save_individual_views(
@@ -382,6 +462,7 @@ def save_kikuchi_ohp_overview(h5_path: Path, up2_root: Path, rows: list[dict[str
     fig.tight_layout(rect=(0, 0, 1, 0.975))
     fig.savefig(output_dir / "pt_highres_kikuchi_ohp_overview.png", bbox_inches="tight")
     plt.close(fig)
+    write_csv(output_dir / "pt_highres_ohp_overlay_diagnostics.csv", diagnostics)
 
 
 def save_scores_overview(calibration_dir: Path, output_dir: Path) -> None:
@@ -509,13 +590,14 @@ def write_report(output_dir: Path, h5_path: Path, up2_root: Path, calibration_di
         "",
         "- `pt_highres_sem_ipf_overview.png`: each formal angle as H5 SEM + H5 orientation IPF-Z with the selected EBSD pixel.",
         "- `pt_highres_kikuchi_ohp_overview.png`: enhanced Kikuchi disk and raw Kikuchi with EDAX/OHP bands using the corrected `normal_theta_rho+_yup` convention.",
+        "- `pt_highres_ohp_overlay_diagnostics.csv`: per-angle OHP line response on the band-enhanced Kikuchi image, used as an overlay sanity check.",
         "- `pt_highres_quality_pc_score_overview.png`: score, PC residual, forward detector validation and LightGlue alignment diagnostics.",
         "- `pt_highres_existing_calibration_result_index.png`: index sheet for the existing full calibration visualizations.",
         "- `per_angle/`: individual SEM, IPF, Kikuchi, enhanced Kikuchi, band response and OHP-band PNGs for every angle.",
         "",
         "## Notes",
         "",
-        "- The 12 formal EBSD mappings live in the H5 as `Area 8-0` through `Area 8-330`; the matching UP2 files are `Area 3` through `Area 14`.",
+        "- The 12 formal EBSD mappings live in the H5 as `Area 8-0` through `Area 8-330`; the matching UP2 files are `Area 3` through `Area 14` in acquisition order `30, 60, ..., 330, 0`.",
         "- The extra small UP2 files in the same directory are listed in `pt_highres_raw_up2_inventory.csv` but are not part of this 12-map rotation series.",
         "- The detector-validated sphere placement remains the primary result. The cubic-symmetry branch is kept as a diagnostic and should not overwrite local sphere matching.",
         "",
