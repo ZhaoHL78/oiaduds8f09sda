@@ -42,6 +42,7 @@ OHP_LINE_COLORS = (
     "#00b6ff",
     "#76ff54",
 )
+OHP_LINE_VARIANT = "normal_theta_rho+_yup"
 
 HKL_CANDIDATES = np.array(
     [
@@ -719,32 +720,52 @@ def pattern_display(pattern: np.ndarray) -> np.ndarray:
 def ohp_lines_from_record(
     record: np.ndarray,
     circle_size: float,
-    max_rho_fraction: float,
     output_size: int,
     rho_sign: float = 1.0,
 ) -> list[dict[str, float]]:
-    radius = 0.5 * (output_size - 1)
-    center = radius
+    center = 0.5 * (output_size - 1)
+    x_min = -center
+    x_max = output_size - 1 - center
+    y_min = -(output_size - 1 - center)
+    y_max = center
     lines: list[dict[str, float]] = []
     for band_id, (rho_bin, theta_deg, width, peak) in enumerate(record.reshape(-1, 4)):
-        rho_fraction = ((float(rho_bin) / circle_size) * 2.0 - 1.0) * max_rho_fraction
-        rho = rho_sign * rho_fraction * radius
+        # EDAX OHP stores rho in Hough bins. The pixel rho is the offset from
+        # the Hough circle center scaled by the detector diameter. Do not apply
+        # Maximum Rho Fraction again here; doing so shrinks the bands toward the
+        # center and makes them visibly miss the Kikuchi pattern.
+        rho = rho_sign * (float(rho_bin) - 0.5 * circle_size) * (output_size / circle_size)
         theta = np.deg2rad(float(theta_deg))
-        normal = np.array([np.cos(theta), np.sin(theta)], dtype=np.float64)
-        tangent = np.array([-np.sin(theta), np.cos(theta)], dtype=np.float64)
-        span2 = radius * radius - rho * rho
-        if span2 <= 0:
+        c = np.cos(theta)
+        s = np.sin(theta)
+        points: list[tuple[float, float]] = []
+        if abs(s) > 1e-8:
+            for x in (x_min, x_max):
+                y = (rho - x * c) / s
+                if y_min - 1e-5 <= y <= y_max + 1e-5:
+                    points.append((float(x), float(y)))
+        if abs(c) > 1e-8:
+            for y in (y_min, y_max):
+                x = (rho - y * s) / c
+                if x_min - 1e-5 <= x <= x_max + 1e-5:
+                    points.append((float(x), float(y)))
+        unique: list[tuple[float, float]] = []
+        for point in points:
+            if all((point[0] - old[0]) ** 2 + (point[1] - old[1]) ** 2 > 1e-4 for old in unique):
+                unique.append(point)
+        if len(unique) < 2:
             continue
-        span = float(np.sqrt(span2))
-        p0 = rho * normal - span * tangent
-        p1 = rho * normal + span * tangent
+        p0, p1 = max(
+            ((a, b) for i, a in enumerate(unique) for b in unique[i + 1 :]),
+            key=lambda pair: (pair[0][0] - pair[1][0]) ** 2 + (pair[0][1] - pair[1][1]) ** 2,
+        )
         lines.append(
             {
                 "band_id": float(band_id),
                 "x0": float(p0[0] + center),
-                "y0": float(p0[1] + center),
+                "y0": float(center - p0[1]),
                 "x1": float(p1[0] + center),
-                "y1": float(p1[1] + center),
+                "y1": float(center - p1[1]),
                 "rho_bin": float(rho_bin),
                 "theta_deg": float(theta_deg),
                 "bandwidth": float(width),
@@ -770,9 +791,8 @@ def read_ohp_lines(h5_path: Path, h5_group: str, index: int, output_size: int) -
         group = h5[h5_group]
         header = group["EBSD/OHP/HEADER"]
         circle_size = float(np.asarray(header["Circle Size"][()]).reshape(-1)[0])
-        max_rho_fraction = float(np.asarray(header["Maximum Rho Fraction"][()]).reshape(-1)[0])
         record = group["EBSD/OHP/DATA/DATA"][index].astype(np.float32)
-    return ohp_lines_from_record(record, circle_size, max_rho_fraction, output_size=output_size)
+    return ohp_lines_from_record(record, circle_size, output_size=output_size)
 
 
 def choose_coupling_point(
@@ -873,6 +893,7 @@ def save_kikuchi_coupling_figure(
     phase_families = ", ".join(selected["phase_hkl_families"]) or "not stored"
     text = (
         f"UP2: {up2_path.name}\n"
+        f"OHP line variant: {OHP_LINE_VARIANT}\n"
         f"UP2 resolution/count: {up2_info['width']}x{up2_info['height']} / {up2_info['count']}\n"
         f"EBSD index: {selected['ebsd_index']}  row={selected['ebsd_row']} col={selected['ebsd_col']}\n"
         f"IQ={selected['iq']:.1f}, CI={selected['ci']:.3f}, phase={selected['phase']}\n"
@@ -1111,6 +1132,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "alignment_metadata": str(args.alignment_metadata),
         "finetuned_orientation_delta_deg": orientation_delta,
         "normal_operator": "cv2.Scharr(depthmap, scale=1/32), then physical pitch normalization",
+        "ohp_line_variant_for_kikuchi_check": OHP_LINE_VARIANT,
         "afm_to_sem_rotation_2d": np.asarray(normal_data["afm_to_sem_rotation_2d"]).tolist(),
         "plane_level": args.plane_level,
         "normal_smooth_sigma_px": args.normal_smooth_sigma_px,
