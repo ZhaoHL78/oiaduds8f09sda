@@ -1,0 +1,63 @@
+{
+  "random_seed": 20260722,
+  "afm": {
+    "path": "D:/EBSD project/3d数据/pt-afm/Pt-2high resolution.ibw",
+    "height_channel": "HeightRetrace",
+    "display_orientation": "rot90",
+    "height_unit_scale_to_um": 1000000.0
+  },
+  "sem": {
+    "source": "edax_h5",
+    "h5_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217.edaxh5",
+    "h5_group": "20251217/Pt foil-high resolution/Area 8-60/OIM Map 1",
+    "display_orientation": "raw",
+    "note": "Use raw H5 SEM for AFM alignment. Only flip SEM together with results when converting to EDAX IPF frame."
+  },
+  "ipf_reference": {
+    "path": "E:/ZHL/20251209Pt-EBSD MAP/pt-high resolution/60.bmp",
+    "sem_to_ipf_orientation": "flipud"
+  },
+  "output_dir": "outputs/afm_sem_geometric_registration_pt_highres60",
+  "control_points": {
+    "path": "outputs/afm_sem_geometric_registration_pt_highres60/control_points.json",
+    "min_points": 8,
+    "holdout_fraction": 0.25
+  },
+  "features": {
+    "afm_smooth_sigma_px": 4.0,
+    "sem_smooth_sigma_px": 3.0,
+    "afm_edge_percentile": 88.0,
+    "sem_edge_percentile": 90.0,
+    "remove_small_objects_px": 80,
+    "closing_radius_px": 2
+  },
+  "model_selection": {
+    "ransac_reproj_threshold_px": 8.0,
+    "prefer_low_dof_within_fraction": 0.15,
+    "max_acceptable_median_error_px": 12.0
+  },
+  "distance_refinement": {
+    "enabled": true,
+    "model": "affine",
+    "pyramid_scales": [0.25, 0.5, 1.0],
+    "max_edge_points_per_direction": 2500,
+    "huber_f_scale_px": 5.0,
+    "max_nfev": 220,
+    "tolerance_px": 3.0
+  },
+  "nonrigid": {
+    "enabled": false,
+    "attempt_only_if_systematic_residual_px": 8.0,
+    "max_local_displacement_px": 20.0
+  },
+  "normalmap": {
+    "smooth_sigma_px": 1.2,
+    "tilt_color_ref_deg": 12.0,
+    "plane_level": true
+  },
+  "visualization": {
+    "dpi": 180,
+    "checker_block_px": 32,
+    "overlay_alpha": 0.5
+  }
+}

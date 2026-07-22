@@ -467,6 +467,29 @@
   - `pt_highres60_afm_same_fov_alignment_data.npz`
   - `pt_highres60_afm_same_fov_alignment_metadata.json`
 
+### 17.2 AFM-SEM 几何结构驱动跨模态配准
+
+- `afm_sem_geometric_registration.py` 是当前推荐的 AFM-SEM 跨模态配准入口，用来替代直接在原始灰度图上跑 SuperPoint/LightGlue、SIFT 或稠密光流的路线。
+- 配置文件：`configs/afm_sem_pt_highres60.json`。
+- 默认数据：
+  - AFM: `D:\EBSD project\3d数据\pt-afm\Pt-2high resolution.ibw`
+  - SEM: H5 `E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217.edaxh5` 中 `20251217/Pt foil-high resolution/Area 8-60/OIM Map 1`
+  - IPF reference: `E:\ZHL\20251209Pt-EBSD MAP\pt-high resolution\60.bmp`
+- 坐标约定：
+  - AFM `.ibw` 读出的 `HeightRetrace` 保留浮点高度值，默认先 `rot90` 到 AFM 软件显示方向。
+  - AFM/SEM 配准目标使用 H5 SEM raw row order，不做 `flipud`；只有进入 EDAX IPF frame 时，才对 SEM/AFM/IPF 结果一起进入 `flipud` 后的显示帧。
+  - 所有矩阵默认表示 `AFM_display pixel -> SEM_display pixel`，同时输出逆矩阵。
+- 流程：
+  - 读取数据、动态范围和元数据，保存方向候选图。
+  - AFM 用高度梯度、局部方差和谷线响应提取晶界；SEM 做背景校正、去噪和多尺度边缘提取。
+  - 清理晶界 mask、骨架化并生成 Euclidean distance transform。
+  - 通过交互式工具选择 8-15 对晶界交点、晶界转折、图像边缘交点或孤立缺陷控制点。
+  - 依次拟合 similarity、affine、homography，并用 RANSAC、训练/留出控制点误差和最低自由度原则选模型。
+  - 在控制点初始化后，用双向晶界距离场和 Huber 鲁棒损失做多分辨率精修。
+  - 默认不启用非刚性配准；只有全局模型残差呈明确空间系统性时，才允许单独尝试强正则化的非刚性模型。
+  - 最终把 AFM 浮点高度场重采样到 SEM frame，再在统一坐标系下重新计算 Scharr normalmap，而不是 warp 旧 RGB normalmap。
+- 已运行准备阶段，当前输出在 `outputs/afm_sem_geometric_registration_pt_highres60/`。自动晶界提取可以作为精修约束，但不够可靠到自动生成最终矩阵，因此程序会在缺少人工控制点时停止，并明确返回 `needs_control_points`，避免输出假的配准结果。
+
 ### 18. AFM 法向量与 EBSD 表面晶面指数图
 
 - `afm_ebsd_surface_index.py` 用于把已经配准好的 AFM 高度场转换为表面法向量，并把这些法向量与 EBSD orientation 结合，得到样品表面法向在晶体坐标系中的 `{hkl}` / surface-index 数据。
@@ -525,6 +548,7 @@
 - `pt_highres_30deg_lightglue_calibration.py`
 - `align_pt_afm_sem_ipf.py`
 - `align_pt_highres60_afm.py`
+- `afm_sem_geometric_registration.py`
 - `afm_ebsd_surface_index.py`
 - `visualize_edax_projection_sets.py`
 - `visualize_edax_match_3d.py`
@@ -694,6 +718,23 @@ D:\anaconda3\envs\torch\python.exe .\align_pt_highres60_afm.py `
 ```
 
 ```powershell
+D:\anaconda3\envs\torch\python.exe .\afm_sem_geometric_registration.py `
+  --config configs\afm_sem_pt_highres60.json `
+  --prepare-only
+```
+
+```powershell
+D:\anaconda3\envs\torch\python.exe .\afm_sem_geometric_registration.py `
+  --config configs\afm_sem_pt_highres60.json `
+  --pick-points
+```
+
+```powershell
+D:\anaconda3\envs\torch\python.exe .\afm_sem_geometric_registration.py `
+  --config configs\afm_sem_pt_highres60.json
+```
+
+```powershell
 D:\anaconda3\envs\torch\python.exe .\batch_pt_kikuchi_spherical_calibration.py `
   --h5 D:\EBSD-data\Pt-1\20251209Pt.edaxh5 `
   --up2-root D:\EBSD-data `
@@ -742,6 +783,9 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 - `export_pt_highres_data_overview.py` 新增 `pt_highres_ohp_overlay_diagnostics.csv`，每次输出 OHP overlay 时同步记录 OHP 线在 band-enhanced Kikuchi 上的响应，避免 H5/OHP 与 UP2 pattern 错位时只靠肉眼发现。
 - 新增 `align_pt_highres60_afm.py`，把 `Pt-2high resolution.ibw` 配准到 Pt high-resolution 60° EBSD 的 H5 SEM/IPF frame，并单独输出 AFM height、amplitude、Scharr normalmap、normalmap color key、LightGlue matches、候选 overlay 预览和 AFM->EBSD60 overlay。
 - 修正 Pt high-resolution 60° AFM/SEM/IPF 对齐：旧版误用 SEM/IPF scale bar 和 EBSD 物理宽度，把 AFM 缩成小块。新版 `align_pt_highres60_afm_same_fov.py` 使用 AFM/SEM 同视场先验，先把 AFM `rot90` 到软件显示方向，再与 H5 SEM raw row order 做中心旋转约 10° 的同视场仿射；只有进入 EDAX IPF frame 时才 `flipud`。
+- 新增 `afm_sem_geometric_registration.py` 和 `configs/afm_sem_pt_highres60.json`，把 Pt high-resolution 60° AFM-SEM 配准改成几何结构驱动流程：AFM 高度/梯度与 SEM 背景校正边缘分别提取晶界，人工控制点初始化 similarity/affine/homography，RANSAC 选低自由度模型，再用双向晶界距离场做多分辨率鲁棒精修。
+- 新流程默认使用 `AFM rot90` 与 `SEM raw row order`；不再把 H5 SEM 上下翻转后用于 AFM 配准，也不使用错误 scale bar 推导视场大小。EDAX IPF frame 的 `flipud` 只在后续 IPF/EBSD 叠加时单独应用。
+- 已运行 `--prepare-only` 生成数据检查、方向候选、AFM/SEM 梯度、晶界 mask、骨架和距离场；当前缺少人工确认控制点时程序返回 `needs_control_points`，不输出虚假的最终变换矩阵。
 
 ### 2026-07-21
 
