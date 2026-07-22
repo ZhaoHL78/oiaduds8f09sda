@@ -277,6 +277,21 @@
   - `pt_highres_30deg_cubic_symmetry_axis_prior_summary.csv`
   - `pt_highres_sem_transforms_raw_to_angle0.npz`
 
+### 13.1 Pt high-resolution 数据总览与质检可视化
+
+- `export_pt_highres_data_overview.py` 是 12 组 high-resolution 数据的轻量总览导出入口。
+- 该脚本不重新运行 LightGlue、PC finetune 或球面匹配，只读取原始 H5/UP2 和 `pt_highres_30deg_lightglue_calibration.py` 已生成的 summary。
+- 输出用于快速检查 H5 SEM、H5 orientation IPF-Z、UP2 Kikuchi、OHP band、PC residual 和 score 是否一一对应。
+- OHP band overlay 使用已修正的 `normal_theta_rho+_yup` 约定，与 `export_publication_h5_kikuchi_bands.py` 保持一致。
+- 输出：
+  - `pt_highres_sem_ipf_overview.png`
+  - `pt_highres_kikuchi_ohp_overview.png`
+  - `pt_highres_quality_pc_score_overview.png`
+  - `pt_highres_existing_calibration_result_index.png`
+  - `pt_highres_12map_visual_inventory.csv`
+  - `pt_highres_raw_up2_inventory.csv`
+  - `per_angle/angle_***_*.png`
+
 ### 14. Pt Kikuchi 批量球面匹配校准固定流程
 
 - `batch_pt_kikuchi_spherical_calibration.py` 是当前推荐的固定批处理入口，用于在 Pt EBSD 数据中自动挑选若干高质量 Kikuchi，并复用单张 pattern 已验证的球面匹配流程。
@@ -609,6 +624,14 @@ D:\anaconda3\envs\torch\python.exe .\pt_highres_30deg_lightglue_calibration.py `
 ```
 
 ```powershell
+D:\anaconda3\envs\torch\python.exe .\export_pt_highres_data_overview.py `
+  --h5 "E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217.edaxh5" `
+  --up2-root "E:\ZHL\EBSD-RAW\20251217Pt-high resolution" `
+  --calibration-dir outputs\pt_highres_30deg_lightglue_calibration `
+  --output-dir outputs\pt_highres_data_overview
+```
+
+```powershell
 D:\anaconda3\envs\torch\python.exe .\batch_pt_kikuchi_spherical_calibration.py `
   --h5 D:\EBSD-data\Pt-1\20251209Pt.edaxh5 `
   --up2-root D:\EBSD-data `
@@ -647,6 +670,12 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 ```
 
 ## 版本改动
+
+### 2026-07-22
+
+- 新增 `export_pt_highres_data_overview.py`，用于把 Pt high-resolution 12 组 30° EBSD 数据的 H5/UP2/index/SEM/IPF/Kikuchi/OHP/PC/score 统一导出成总览图和索引表。
+- 该入口只做可视化和质检，不重新运行 LightGlue 配准或球面匹配，避免改变已验证的 high-res calibration 结果。
+- 当前本机输出保存在 `outputs/pt_highres_data_overview/`；`pt_highres_raw_up2_inventory.csv` 确认正式 12 组 UP2 为 `Area 3` 到 `Area 14`，每组 `470 x 470 x 580320`，对应 H5 `Area 8-0` 到 `Area 8-330`。
 
 ### 2026-07-21
 
