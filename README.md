@@ -212,6 +212,19 @@
   - `pt3_area90_finetuned_ipf_metadata.json`
   - `pt3_area90_finetuned_ipf_parameters.csv`
 
+### 10.4 Pt high-resolution 60° AFM/SEM/IPF 对应
+
+- `align_pt_highres60_afm.py` 是当前推荐的 Pt high-resolution 60° AFM 对齐流程。
+- 坐标约定已修正：H5 内 `SEM-PRIAS Images/DATA/SEM` 与 EDAX 软件导出的 `60.bmp` IPF-Z 行方向相反，因此默认先对 H5 SEM 做 `flipud`，再进入 IPF/SEM 同帧可视化。
+- AFM 配准不再直接使用 IPF 色彩图做几何基准；最终 accepted transform 使用 AFM height Scharr/低频晶界 feature 与 flipped SEM grain-boundary feature 做中心约束配准。
+- LightGlue/SuperPoint 只作为可选诊断，默认脚本仍可开启；如果只需要物理尺度和晶界约束下的稳定输出，可用 `--skip-lightglue`。
+- 当前输出目录：`outputs/pt_highres60_afm_alignment_corrected`，关键图包括：
+  - `ebsd60_sem_flipud_ipf_check.png`
+  - `afm_sem_grain_boundary_overlay_corrected.png`
+  - `afm_scharr_normalmap_with_colorbar.png`
+  - `afm_normalmap_overlay_on_ebsd60_sem.png`
+  - `afm_normalmap_overlay_on_ebsd60_ipf.png`
+
 ### 11. UP2 到 EBSD 与 Kikuchi 的逐文件对应
 
 - `export_up2_ebsd_kikuchi_correspondence.py` 以 UP2 文件为主线读取 `E:\ZHL\EBSD-RAW\20251209Pt`。
@@ -433,12 +446,17 @@
   - H5 mapping: `20251217/Pt foil-high resolution/Area 8-60/OIM Map 1`
   - EDAX IPF reference: `E:\ZHL\20251209Pt-EBSD MAP\pt-high resolution\60.bmp`
 - AFM 读出为 `1024 x 1024`，通道为 `HeightRetrace / AmplitudeRetrace / PhaseRetrace / ZSensorRetrace`，扫描尺寸 `70 um`。
-- 配准使用 H5 内置 60° SEM，不使用外部 BSE。由于 AFM 只覆盖 EBSD 视场的一部分，LightGlue/SuperPoint 会在多个 AFM downscale 候选上匹配，并加入物理尺度先验：`AFM 70 um / EBSD 241.8 um`，避免不合理尺度的错配。
-- 最终候选按 `物理尺度可行 -> inliers -> inlier ratio -> RMSE -> 尺度误差` 排序，同时输出前几个候选的 normalmap overlay 预览，方便检查晶界是否真的对上。
+- 配准使用 H5 内置 60° SEM，不使用外部 BSE。H5 SEM 与 EDAX 软件 IPF-Z 的 row direction 相反，因此默认对 SEM 做 `flipud` 后再进入 IPF frame。
+- AFM 不再直接配 IPF 色彩图。最终几何以 flipped SEM grain-boundary feature 为基准，使用 AFM height grain-boundary feature、中心接近先验和物理尺度先验做受限 NCC 配准；LightGlue/SuperPoint 只保留为可选诊断。
 - AFM normalmap 用 `HeightRetrace` 做平面扣除后，通过 Scharr 算子提取 `dz/dx`、`dz/dy`，构造 `[-dz/dx, -dz/dy, 1]`，再只使用 AFM->SEM affine 的平面旋转部分把 normalmap 表达到 EBSD top-view frame。affine 的 scale/shear 不进入高度梯度。
-- 当前本机结果：最佳候选为 `ZSensorRetrace_hp_scale0.5500 -> sem_hp`，`9/10` inliers，RMSE `2.49 px`，`sx=0.154`、`sy=0.225`，物理预期平均尺度约 `0.145`。
+- 当前本机 corrected 结果：`sem_flip_y_to_match_ipf=True`，最终受限晶界配准为 `scale=0.1333`、`rotation=+40.0 deg`、中心误差 `34.6 px`、grain-boundary NCC `0.202`；物理预期平均尺度约 `0.145`。
 - 输出：
-  - `ebsd60_sem_h5.png`
+  - `ebsd60_sem_h5_raw_row_order.png`
+  - `ebsd60_sem_h5_flipud_ipf_frame.png`
+  - `ebsd60_sem_flipud_ipf_check.png`
+  - `ebsd60_sem_flipud_grain_boundary_feature.png`
+  - `afm_height_grain_boundary_feature.png`
+  - `afm_sem_grain_boundary_overlay_corrected.png`
   - `ebsd60_ipf_edax_style_sem_frame.png`
   - `afm_height_nm.png`
   - `afm_amplitude.png`
@@ -448,7 +466,6 @@
   - `afm_normal_azimuth_deg.png`
   - `afm_scharr_dz_dx_um_per_um.png`
   - `afm_scharr_dz_dy_um_per_um.png`
-  - `lightglue_afm_ebsd60_matches.png`
   - `candidate_normalmap_overlay_previews.png`
   - `afm_height_warped_to_ebsd60_sem.png`
   - `afm_amplitude_warped_to_ebsd60_sem.png`
@@ -733,6 +750,7 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 - 修正 Pt high-resolution 的 H5/UP2 对应关系：正式 12 组 UP2 为 `Area 3` 到 `Area 14`，每组 `470 x 470 x 580320`，但对应角度按真实采集顺序为 `30°, 60°, ..., 330°, 0°`，不是 `0°, 30°, ...`。
 - `export_pt_highres_data_overview.py` 新增 `pt_highres_ohp_overlay_diagnostics.csv`，每次输出 OHP overlay 时同步记录 OHP 线在 band-enhanced Kikuchi 上的响应，避免 H5/OHP 与 UP2 pattern 错位时只靠肉眼发现。
 - 新增 `align_pt_highres60_afm.py`，把 `Pt-2high resolution.ibw` 配准到 Pt high-resolution 60° EBSD 的 H5 SEM/IPF frame，并单独输出 AFM height、amplitude、Scharr normalmap、normalmap color key、LightGlue matches、候选 overlay 预览和 AFM->EBSD60 overlay。
+- 修正 Pt high-resolution 60° AFM/SEM/IPF 对齐：H5 SEM 默认 `flipud` 后才与 EDAX IPF-Z 对应；AFM 几何基准改为 flipped SEM grain-boundary feature，不再直接用 IPF 色块边界配准。
 
 ### 2026-07-21
 

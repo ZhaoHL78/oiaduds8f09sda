@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from PIL import Image
+from skimage import exposure, filters
 
 from afm_ebsd_surface_index import (
     height_to_normals,
@@ -38,7 +39,7 @@ from pt_highres_30deg_lightglue_calibration import DEFAULT_H5, build_map_specs, 
 
 DEFAULT_AFM = Path(r"D:\EBSD project\3d数据\pt-afm\Pt-2high resolution.ibw")
 DEFAULT_EDAX_IPF = Path(r"E:\ZHL\20251209Pt-EBSD MAP\pt-high resolution\60.bmp")
-DEFAULT_OUTPUT_DIR = Path("outputs") / "pt_highres60_afm_alignment"
+DEFAULT_OUTPUT_DIR = Path("outputs") / "pt_highres60_afm_alignment_corrected"
 DEFAULT_ANGLE = 60
 
 
@@ -58,7 +59,11 @@ def read_ebsd60(args: argparse.Namespace) -> dict[str, Any]:
     spec = specs[args.angle]
     with h5py.File(args.h5, "r") as h5:
         group = h5[spec.h5_group]
-        sem = normalize_gray(np.asarray(group["SEM-PRIAS Images/DATA/SEM"][:], dtype=np.float32))
+        sem_raw = normalize_gray(np.asarray(group["SEM-PRIAS Images/DATA/SEM"][:], dtype=np.float32))
+        # EDAX's exported IPF-Z bitmap and the PRIAS SEM image in this H5 are
+        # stored with opposite row direction.  Flip only the SEM image; IPF and
+        # EBSD scan-row data stay in the software/export frame.
+        sem = np.flipud(sem_raw) if args.flip_sem_y else sem_raw
         nrows = int(np.asarray(group["Sample/Number Of Rows"][()]).reshape(-1)[0])
         ncols = int(np.asarray(group["Sample/Number Of Columns"][()]).reshape(-1)[0])
         step_x_um = float(np.asarray(group["Sample/Step X"][()]).reshape(-1)[0])
@@ -68,9 +73,11 @@ def read_ebsd60(args: argparse.Namespace) -> dict[str, Any]:
     ipf_sem = cv2.resize(ipf_ref, (sem.shape[1], sem.shape[0]), interpolation=cv2.INTER_LINEAR).astype(np.float32)
     return {
         "spec": spec,
+        "sem_raw": sem_raw,
         "sem": sem,
         "ipf_sem": ipf_sem,
         "ipf_h5": ipf_h5,
+        "sem_flip_y_to_match_ipf": bool(args.flip_sem_y),
         "nrows": nrows,
         "ncols": ncols,
         "step_x_um": step_x_um,
@@ -200,6 +207,208 @@ def overlay_gray_with_rgba(gray: np.ndarray, rgb: np.ndarray, mask: np.ndarray, 
     return np.clip(base * (1.0 - a) + rgb * a, 0.0, 1.0).astype(np.float32)
 
 
+def sem_grain_boundary_feature(sem: np.ndarray) -> np.ndarray:
+    """Extract broad SEM grain-boundary contrast while suppressing fine scan/channeling stripes."""
+    normalized = robust_rescale(sem)
+    equalized = exposure.equalize_adapthist(normalized, clip_limit=0.018).astype(np.float32)
+    smooth = filters.gaussian(equalized, sigma=3.2, preserve_range=True).astype(np.float32)
+    gx = cv2.Scharr(smooth, cv2.CV_32F, 1, 0, scale=1.0 / 32.0)
+    gy = cv2.Scharr(smooth, cv2.CV_32F, 0, 1, scale=1.0 / 32.0)
+    edge = robust_rescale(np.sqrt(gx * gx + gy * gy), 55.0, 99.8)
+    canny = cv2.Canny((smooth * 255).astype(np.uint8), 22, 85).astype(np.float32) / 255.0
+    combined = np.maximum(edge, 0.72 * canny)
+    combined = filters.gaussian(combined, sigma=0.8, preserve_range=True).astype(np.float32)
+    return robust_rescale(combined, 1.0, 99.5)
+
+
+def afm_grain_boundary_feature(channels: dict[str, np.ndarray], height_channel: str) -> np.ndarray:
+    """AFM height-edge feature used for physical grain-boundary alignment."""
+    height = channels[height_channel].astype(np.float32)
+    height = height - np.nanmedian(height)
+    height = robust_rescale(height, 1.0, 99.0)
+    smooth = filters.gaussian(height, sigma=4.0, preserve_range=True).astype(np.float32)
+    gx = cv2.Scharr(smooth, cv2.CV_32F, 1, 0, scale=1.0 / 32.0)
+    gy = cv2.Scharr(smooth, cv2.CV_32F, 0, 1, scale=1.0 / 32.0)
+    edge = robust_rescale(np.sqrt(gx * gx + gy * gy), 55.0, 99.8)
+    edge = exposure.equalize_adapthist(edge, clip_limit=0.015).astype(np.float32)
+    return filters.gaussian(edge, sigma=1.1, preserve_range=True).astype(np.float32)
+
+
+def build_similarity_affine(
+    afm_shape: tuple[int, int],
+    target_center_xy: np.ndarray,
+    scale: float,
+    angle_deg: float,
+    flip_x: bool,
+    flip_y: bool,
+) -> np.ndarray:
+    afm_h, afm_w = afm_shape
+    afm_center = np.array([afm_w / 2.0, afm_h / 2.0], dtype=np.float64)
+    theta = math.radians(angle_deg)
+    rotation = np.array(
+        [[math.cos(theta), -math.sin(theta)], [math.sin(theta), math.cos(theta)]],
+        dtype=np.float64,
+    )
+    flip = np.diag([-1.0 if flip_x else 1.0, -1.0 if flip_y else 1.0])
+    linear = scale * (rotation @ flip)
+    offset = target_center_xy - linear @ afm_center
+    return np.column_stack([linear, offset]).astype(np.float64)
+
+
+def center_error_px(candidate: Candidate, target_shape: tuple[int, int], afm_shape: tuple[int, int]) -> float:
+    target_h, target_w = target_shape
+    afm_h, afm_w = afm_shape
+    mapped = candidate.affine_afm_to_sem @ np.array([afm_w / 2.0, afm_h / 2.0, 1.0], dtype=np.float64)
+    expected = np.array([target_w / 2.0, target_h / 2.0], dtype=np.float64)
+    return float(np.linalg.norm(mapped - expected))
+
+
+def normalized_cross_correlation(a: np.ndarray, b: np.ndarray, valid: np.ndarray) -> float:
+    if int(valid.sum()) < 256:
+        return -1.0
+    av = a[valid].astype(np.float64)
+    bv = b[valid].astype(np.float64)
+    av -= float(av.mean())
+    bv -= float(bv.mean())
+    denom = float(np.linalg.norm(av) * np.linalg.norm(bv))
+    return float(av.dot(bv) / denom) if denom > 1e-12 else -1.0
+
+
+def constrained_center_grain_alignment(
+    sem_feature: np.ndarray,
+    afm_feature: np.ndarray,
+    expected_scale: float,
+    search_px: float,
+    coarse_angle_step_deg: float,
+    refine_angle_step_deg: float,
+    scale_span: float,
+) -> tuple[Candidate, list[Candidate], dict[str, float]]:
+    """Find AFM->flipped-SEM affine using grain boundaries, known scale, and near-center prior."""
+    target_h, target_w = sem_feature.shape
+    afm_h, afm_w = afm_feature.shape
+    target_center = np.array([target_w / 2.0, target_h / 2.0], dtype=np.float64)
+    sem = robust_rescale(sem_feature, 1.0, 99.5).astype(np.float32)
+    afm = robust_rescale(afm_feature, 1.0, 99.5).astype(np.float32)
+
+    def evaluate(
+        scale: float,
+        angle: float,
+        flip_x: bool,
+        flip_y: bool,
+        center_hint: np.ndarray | None,
+        local_search_px: float,
+    ) -> tuple[float, Candidate]:
+        center = target_center if center_hint is None else center_hint
+        affine = build_similarity_affine((afm_h, afm_w), center, scale, angle, flip_x, flip_y)
+        warped = cv2.warpAffine(
+            afm,
+            affine,
+            (target_w, target_h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+        mask = cv2.warpAffine(
+            np.ones((afm_h, afm_w), dtype=np.float32),
+            affine,
+            (target_w, target_h),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+        x0 = max(0, int(round(center[0] - scale * afm_w / 2.0 - local_search_px)))
+        x1 = min(target_w, int(round(center[0] + scale * afm_w / 2.0 + local_search_px)))
+        y0 = max(0, int(round(center[1] - scale * afm_h / 2.0 - local_search_px)))
+        y1 = min(target_h, int(round(center[1] + scale * afm_h / 2.0 + local_search_px)))
+        valid = (mask[y0:y1, x0:x1] > 0.5) & np.isfinite(sem[y0:y1, x0:x1])
+        score = normalized_cross_correlation(warped[y0:y1, x0:x1], sem[y0:y1, x0:x1], valid)
+        candidate = Candidate(
+            afm_name=f"afm_height_grain_boundary_scale{scale:.4f}_rot{angle:+.2f}_fx{int(flip_x)}_fy{int(flip_y)}",
+            sem_name="flipped_sem_grain_boundary_center_prior",
+            matches=0,
+            inliers=int(round(max(score, 0.0) * 10000.0)),
+            inlier_ratio=max(score, 0.0),
+            rmse=1.0 - score,
+            affine_afm_to_sem=affine,
+            inlier_mask=np.zeros(0, dtype=bool),
+            key_sem=np.zeros((0, 2), dtype=np.float32),
+            key_afm=np.zeros((0, 2), dtype=np.float32),
+        )
+        return score, candidate
+
+    coarse_candidates: list[tuple[float, Candidate, float, bool, bool]] = []
+    scale_values = np.linspace(1.0 - scale_span, 1.0 + scale_span, 7) * expected_scale
+    angle_values = np.arange(-180.0, 180.0 + 0.1 * coarse_angle_step_deg, coarse_angle_step_deg)
+    for flip_x, flip_y in [(False, False), (True, False), (False, True), (True, True)]:
+        for scale in scale_values:
+            for angle in angle_values:
+                score, candidate = evaluate(float(scale), float(angle), flip_x, flip_y, None, search_px)
+                coarse_candidates.append((score, candidate, float(angle), flip_x, flip_y))
+    coarse_candidates.sort(key=lambda item: item[0], reverse=True)
+
+    refined: list[tuple[float, Candidate]] = []
+    for _, coarse, angle0, flip_x, flip_y in coarse_candidates[:12]:
+        coarse_center = coarse.affine_afm_to_sem @ np.array([afm_w / 2.0, afm_h / 2.0, 1.0])
+        base_scale = math.sqrt(max(abs(coarse.det), 1e-12))
+        for scale in np.linspace(base_scale * 0.98, base_scale * 1.02, 7):
+            for angle in np.arange(angle0 - 5.0, angle0 + 5.0 + 0.1 * refine_angle_step_deg, refine_angle_step_deg):
+                for dx in np.linspace(-search_px * 0.35, search_px * 0.35, 7):
+                    for dy in np.linspace(-search_px * 0.35, search_px * 0.35, 7):
+                        center = coarse_center + np.array([dx, dy], dtype=np.float64)
+                        score, candidate = evaluate(float(scale), float(angle), flip_x, flip_y, center, search_px * 0.55)
+                        refined.append((score, candidate))
+    refined.sort(key=lambda item: item[0], reverse=True)
+    best_score, best = refined[0] if refined else (coarse_candidates[0][0], coarse_candidates[0][1])
+    diagnostic_candidates = [item[1] for item in refined[:24]] + [item[1] for item in coarse_candidates[:24]]
+    diag = {
+        "grain_boundary_ncc": float(best_score),
+        "expected_scale": float(expected_scale),
+        "search_px": float(search_px),
+        "coarse_angle_step_deg": float(coarse_angle_step_deg),
+        "refine_angle_step_deg": float(refine_angle_step_deg),
+        "scale_span": float(scale_span),
+    }
+    return best, diagnostic_candidates, diag
+
+
+def save_sem_ipf_check(path: Path, sem_raw: np.ndarray, sem_flipped: np.ndarray, ipf_sem: np.ndarray) -> None:
+    fig, axes = plt.subplots(1, 3, figsize=(14.5, 4.3), dpi=220, constrained_layout=True)
+    axes[0].imshow(sem_raw, cmap="gray", vmin=0.0, vmax=1.0)
+    axes[0].set_title("H5 SEM raw row order")
+    axes[1].imshow(sem_flipped, cmap="gray", vmin=0.0, vmax=1.0)
+    axes[1].set_title("H5 SEM flipud: IPF frame")
+    axes[2].imshow(np.clip(0.44 * np.dstack([sem_flipped] * 3) + 0.72 * ipf_sem, 0.0, 1.0))
+    axes[2].set_title("Flipped SEM + EDAX IPF-Z")
+    for ax in axes:
+        ax.axis("off")
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_grain_edge_overlay(path: Path, sem_feature: np.ndarray, afm_feature: np.ndarray, candidate: Candidate) -> None:
+    afm_rgb = np.dstack([afm_feature] * 3)
+    warped, mask = warp_rgb_to_sem(afm_rgb, candidate.affine_afm_to_sem, sem_feature.shape)
+    sem_gray = robust_rescale(sem_feature, 1.0, 99.5)
+    overlay = np.dstack(
+        [
+            np.maximum(sem_gray, warped[..., 0] * mask),
+            sem_gray * (1.0 - 0.42 * mask),
+            np.maximum(sem_gray, warped[..., 2] * mask),
+        ]
+    )
+    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.2), dpi=220, constrained_layout=True)
+    axes[0].imshow(sem_gray, cmap="gray", vmin=0.0, vmax=1.0)
+    axes[0].set_title("Flipped SEM grain-boundary feature")
+    axes[1].imshow(warped[..., 0], cmap="gray", vmin=0.0, vmax=1.0, alpha=mask)
+    axes[1].set_title("AFM height-edge warped to SEM")
+    axes[2].imshow(np.clip(overlay, 0.0, 1.0))
+    axes[2].set_title(f"Boundary overlay, NCC={candidate.inlier_ratio:.3f}")
+    for ax in axes:
+        ax.axis("off")
+    fig.savefig(path, bbox_inches="tight", transparent=True)
+    plt.close(fig)
+
+
 def save_candidate_overlay_previews(
     path: Path,
     sem: np.ndarray,
@@ -235,9 +444,13 @@ def save_alignment_outputs(
     channels: dict[str, np.ndarray],
     afm_meta: dict[str, Any],
     sem_features: dict[str, np.ndarray],
+    sem_grain_feature: np.ndarray,
+    afm_grain_feature: np.ndarray,
     afm_features_scaled: dict[str, np.ndarray],
     candidates: list[Candidate],
+    lightglue_candidates: list[Candidate],
     expected_scale: float,
+    constrained_diag: dict[str, float],
 ) -> dict[str, Any]:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     best = candidates[0]
@@ -262,8 +475,13 @@ def save_alignment_outputs(
     normal_rgb_warped, normal_mask = warp_rgb_to_sem(normal_rgb, best.affine_afm_to_sem, sem.shape)
 
     paths = {
-        "ebsd60_sem": args.output_dir / "ebsd60_sem_h5.png",
+        "ebsd60_sem_raw": args.output_dir / "ebsd60_sem_h5_raw_row_order.png",
+        "ebsd60_sem": args.output_dir / "ebsd60_sem_h5_flipud_ipf_frame.png",
         "ebsd60_ipf": args.output_dir / "ebsd60_ipf_edax_style_sem_frame.png",
+        "sem_ipf_check": args.output_dir / "ebsd60_sem_flipud_ipf_check.png",
+        "sem_grain_boundary": args.output_dir / "ebsd60_sem_flipud_grain_boundary_feature.png",
+        "afm_grain_boundary": args.output_dir / "afm_height_grain_boundary_feature.png",
+        "grain_boundary_overlay": args.output_dir / "afm_sem_grain_boundary_overlay_corrected.png",
         "afm_height": args.output_dir / "afm_height_nm.png",
         "afm_amplitude": args.output_dir / "afm_amplitude.png",
         "afm_normalmap": args.output_dir / "afm_scharr_normalmap.png",
@@ -285,8 +503,12 @@ def save_alignment_outputs(
         "metadata": args.output_dir / "pt_highres60_afm_alignment_metadata.json",
     }
 
+    save_gray(paths["ebsd60_sem_raw"], ebsd["sem_raw"], "60 deg EBSD SEM from H5, raw row order")
     save_gray(paths["ebsd60_sem"], sem, "60 deg EBSD SEM from H5")
     save_rgb(paths["ebsd60_ipf"], ipf_sem, "60 deg EDAX-style IPF-Z in SEM frame")
+    save_sem_ipf_check(paths["sem_ipf_check"], ebsd["sem_raw"], sem, ipf_sem)
+    save_gray(paths["sem_grain_boundary"], sem_grain_feature, "Flipped 60 deg SEM grain-boundary feature")
+    save_gray(paths["afm_grain_boundary"], afm_grain_feature, "AFM height grain-boundary feature")
     save_scalar_image(paths["afm_height"], normal_data["height_um"] * 1000.0, "AFM height", "viridis", "height (nm)")
     save_gray(paths["afm_amplitude"], robust_rescale(amp), "AFM AmplitudeRetrace", cmap="magma")
     plt.imsave(paths["afm_normalmap"], normal_rgb)
@@ -332,8 +554,13 @@ def save_alignment_outputs(
         vmin=float(np.nanpercentile(normal_data["scharr_dz_drow"], 1.0)),
         vmax=float(np.nanpercentile(normal_data["scharr_dz_drow"], 99.0)),
     )
-    save_match_figure(paths["lightglue_matches"], sem_features[best.sem_name], afm_features_scaled[best.afm_name], best)
+    if lightglue_candidates:
+        diagnostic = lightglue_candidates[0]
+        save_match_figure(paths["lightglue_matches"], sem_features[diagnostic.sem_name], afm_features_scaled[diagnostic.afm_name], diagnostic)
+    elif paths["lightglue_matches"].exists():
+        paths["lightglue_matches"].unlink()
     write_candidates(paths["candidate_table"], candidates)
+    save_grain_edge_overlay(paths["grain_boundary_overlay"], sem_grain_feature, afm_grain_feature, best)
     save_gray(paths["afm_height_warped"], height_norm_warped, "AFM height warped to 60 deg EBSD SEM", cmap="viridis")
     save_gray(paths["afm_amplitude_warped"], amp_warped, "AFM amplitude warped to 60 deg EBSD SEM", cmap="magma")
     save_rgb(paths["afm_normalmap_warped"], normal_rgb_warped, "AFM normalmap warped to 60 deg EBSD SEM", normal_mask)
@@ -355,7 +582,10 @@ def save_alignment_outputs(
         scharr_dz_dcol=normal_data["scharr_dz_dcol"],
         scharr_dz_drow=normal_data["scharr_dz_drow"],
         ebsd60_sem=sem,
+        ebsd60_sem_raw=ebsd["sem_raw"],
         ebsd60_ipf_sem=ipf_sem,
+        sem_grain_boundary=sem_grain_feature,
+        afm_grain_boundary=afm_grain_feature,
     )
 
     metadata = {
@@ -365,10 +595,27 @@ def save_alignment_outputs(
         "h5_group": ebsd["spec"].h5_group,
         "angle_deg": args.angle,
         "edax_ipf_reference": str(args.edax_ipf),
+        "sem_flip_y_to_match_ipf": ebsd["sem_flip_y_to_match_ipf"],
         "ebsd_grid": {"rows": ebsd["nrows"], "cols": ebsd["ncols"]},
         "ebsd_step_um": {"x": ebsd["step_x_um"], "y": ebsd["step_y_um"]},
         "ebsd_physical_size_um": {"width": ebsd["physical_width_um"], "height": ebsd["physical_height_um"]},
         "expected_afm_to_sem_scale": expected_scale,
+        "final_alignment_method": "center-constrained AFM height grain-boundary to flipped SEM grain-boundary NCC",
+        "constrained_grain_boundary_search": constrained_diag,
+        "lightglue_diagnostic": None
+        if not lightglue_candidates
+        else {
+            "afm_feature": lightglue_candidates[0].afm_name,
+            "sem_feature": lightglue_candidates[0].sem_name,
+            "matches": lightglue_candidates[0].matches,
+            "inliers": lightglue_candidates[0].inliers,
+            "inlier_ratio": lightglue_candidates[0].inlier_ratio,
+            "rmse_px": lightglue_candidates[0].rmse,
+            "center_error_px": center_error_px(lightglue_candidates[0], sem.shape, next(iter(channels.values())).shape),
+            "det": lightglue_candidates[0].det,
+            "sx": lightglue_candidates[0].sx,
+            "sy": lightglue_candidates[0].sy,
+        },
         "best_alignment": {
             "afm_feature": best.afm_name,
             "sem_feature": best.sem_name,
@@ -376,6 +623,7 @@ def save_alignment_outputs(
             "inliers": best.inliers,
             "inlier_ratio": best.inlier_ratio,
             "rmse_px": best.rmse,
+            "center_error_px": center_error_px(best, sem.shape, next(iter(channels.values())).shape),
             "det": best.det,
             "sx": best.sx,
             "sy": best.sy,
@@ -387,7 +635,7 @@ def save_alignment_outputs(
             "smooth_sigma_px": args.normal_smooth_sigma_px,
             "tilt_color_ref_deg": args.tilt_color_ref_deg,
         },
-        "outputs": {key: str(value.resolve()) for key, value in paths.items() if key != "metadata"},
+        "outputs": {key: str(value.resolve()) for key, value in paths.items() if key != "metadata" and value.exists()},
     }
     paths["metadata"].write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
     return metadata
@@ -396,6 +644,8 @@ def save_alignment_outputs(
 def run(args: argparse.Namespace) -> dict[str, Any]:
     ebsd = read_ebsd60(args)
     channels, afm_meta = read_afm_channels(args.afm)
+    if args.height_channel not in channels:
+        raise KeyError(f"AFM channel {args.height_channel!r} not found. Available: {list(channels)}")
     scan_size_um = float(afm_meta["scan_size_um"])
     first_channel = next(iter(channels.values()))
     scales, expected_scale = choose_match_scales(
@@ -404,42 +654,58 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         sem_width_px=ebsd["sem"].shape[1],
         afm_width_px=first_channel.shape[1],
     )
-    device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
-    extractor, matcher = make_lightglue_models(device, args.max_keypoints)
+    sem_grain_feature = sem_grain_boundary_feature(ebsd["sem"])
+    afm_grain_feature = afm_grain_boundary_feature(channels, args.height_channel)
     sem_features = sem_feature_images(ebsd["sem"])
     sem_features = {key: sem_features[key] for key in ("sem_norm", "sem_hp", "sem_sobel", "sem_canny") if key in sem_features}
+    sem_features["sem_grain_boundary"] = sem_grain_feature
     afm_features_scaled, scale_by_name = scaled_afm_feature_images(channels, scales)
-
-    raw_candidates = find_best_alignment(
-        sem_features=sem_features,
-        afm_features=afm_features_scaled,
-        extractor=extractor,
-        matcher=matcher,
-        device=device,
-        ransac_reproj_threshold=args.ransac_reproj_threshold,
+    lightglue_candidates: list[Candidate] = []
+    if not args.skip_lightglue:
+        device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+        extractor, matcher = make_lightglue_models(device, args.max_keypoints)
+        raw_candidates = find_best_alignment(
+            sem_features=sem_features,
+            afm_features=afm_features_scaled,
+            extractor=extractor,
+            matcher=matcher,
+            device=device,
+            ransac_reproj_threshold=args.ransac_reproj_threshold,
+        )
+        candidates = [
+            convert_candidate_to_original_afm(candidate, scale_by_name[candidate.afm_name])
+            for candidate in raw_candidates
+        ]
+        lightglue_candidates = rank_candidates_with_scale(candidates, expected_scale)
+    constrained_best, constrained_candidates, constrained_diag = constrained_center_grain_alignment(
+        sem_feature=sem_grain_feature,
+        afm_feature=afm_grain_feature,
+        expected_scale=expected_scale,
+        search_px=args.center_search_px,
+        coarse_angle_step_deg=args.coarse_angle_step_deg,
+        refine_angle_step_deg=args.refine_angle_step_deg,
+        scale_span=args.scale_span,
     )
-    candidates = [
-        convert_candidate_to_original_afm(candidate, scale_by_name[candidate.afm_name])
-        for candidate in raw_candidates
-    ]
-    candidates = rank_candidates_with_scale(candidates, expected_scale)
-    if not candidates:
-        raise RuntimeError("LightGlue/SuperPoint did not find a usable AFM -> EBSD60 SEM affine alignment")
+    candidates = [constrained_best] + constrained_candidates[:24] + lightglue_candidates
     metadata = save_alignment_outputs(
         args=args,
         ebsd=ebsd,
         channels=channels,
         afm_meta=afm_meta,
         sem_features=sem_features,
+        sem_grain_feature=sem_grain_feature,
+        afm_grain_feature=afm_grain_feature,
         afm_features_scaled=afm_features_scaled,
         candidates=candidates,
+        lightglue_candidates=lightglue_candidates,
         expected_scale=expected_scale,
+        constrained_diag=constrained_diag,
     )
-    best = candidates[0]
+    best = constrained_best
     print(f"Saved Pt high-resolution 60 deg AFM alignment to {args.output_dir}")
     print(
-        f"Best LightGlue/SuperPoint: {best.afm_name} -> {best.sem_name}, "
-        f"{best.inliers}/{best.matches} inliers, RMSE={best.rmse:.2f}px, "
+        f"Best constrained grain-boundary alignment: {best.afm_name} -> {best.sem_name}, "
+        f"NCC={best.inlier_ratio:.3f}, center_error={center_error_px(best, ebsd['sem'].shape, first_channel.shape):.1f}px, "
         f"sx={best.sx:.4f}, sy={best.sy:.4f}, expected={expected_scale:.4f}"
     )
     return metadata
@@ -458,8 +724,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--normal-smooth-sigma-px", type=float, default=1.2)
     parser.add_argument("--tilt-color-ref-deg", type=float, default=12.0)
     parser.add_argument("--no-plane-level", action="store_true")
+    parser.add_argument("--flip-sem-y", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-keypoints", type=int, default=2048)
     parser.add_argument("--ransac-reproj-threshold", type=float, default=7.0)
+    parser.add_argument("--center-search-px", type=float, default=70.0)
+    parser.add_argument("--coarse-angle-step-deg", type=float, default=5.0)
+    parser.add_argument("--refine-angle-step-deg", type=float, default=0.5)
+    parser.add_argument("--scale-span", type=float, default=0.06)
+    parser.add_argument("--skip-lightglue", action="store_true")
     parser.add_argument("--cpu", action="store_true", help="Force LightGlue/SuperPoint to run on CPU.")
     return parser.parse_args()
 
