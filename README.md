@@ -426,6 +426,39 @@
   - `afm_height_warped_to_sem.png`
   - `afm_sem_ipf_alignment_metadata.json`
 
+### 17.1 Pt high-resolution 60° AFM -> EBSD 对齐与 normalmap
+
+- `align_pt_highres60_afm.py` 用于把 `D:\EBSD project\3d数据\pt-afm\Pt-2high resolution.ibw` 配准到 Pt high-resolution 的 60° EBSD 数据：
+  - H5: `E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217.edaxh5`
+  - H5 mapping: `20251217/Pt foil-high resolution/Area 8-60/OIM Map 1`
+  - EDAX IPF reference: `E:\ZHL\20251209Pt-EBSD MAP\pt-high resolution\60.bmp`
+- AFM 读出为 `1024 x 1024`，通道为 `HeightRetrace / AmplitudeRetrace / PhaseRetrace / ZSensorRetrace`，扫描尺寸 `70 um`。
+- 配准使用 H5 内置 60° SEM，不使用外部 BSE。由于 AFM 只覆盖 EBSD 视场的一部分，LightGlue/SuperPoint 会在多个 AFM downscale 候选上匹配，并加入物理尺度先验：`AFM 70 um / EBSD 241.8 um`，避免不合理尺度的错配。
+- 最终候选按 `物理尺度可行 -> inliers -> inlier ratio -> RMSE -> 尺度误差` 排序，同时输出前几个候选的 normalmap overlay 预览，方便检查晶界是否真的对上。
+- AFM normalmap 用 `HeightRetrace` 做平面扣除后，通过 Scharr 算子提取 `dz/dx`、`dz/dy`，构造 `[-dz/dx, -dz/dy, 1]`，再只使用 AFM->SEM affine 的平面旋转部分把 normalmap 表达到 EBSD top-view frame。affine 的 scale/shear 不进入高度梯度。
+- 当前本机结果：最佳候选为 `ZSensorRetrace_hp_scale0.5500 -> sem_hp`，`9/10` inliers，RMSE `2.49 px`，`sx=0.154`、`sy=0.225`，物理预期平均尺度约 `0.145`。
+- 输出：
+  - `ebsd60_sem_h5.png`
+  - `ebsd60_ipf_edax_style_sem_frame.png`
+  - `afm_height_nm.png`
+  - `afm_amplitude.png`
+  - `afm_scharr_normalmap.png`
+  - `afm_scharr_normalmap_with_colorbar.png`
+  - `afm_normal_tilt_deg.png`
+  - `afm_normal_azimuth_deg.png`
+  - `afm_scharr_dz_dx_um_per_um.png`
+  - `afm_scharr_dz_dy_um_per_um.png`
+  - `lightglue_afm_ebsd60_matches.png`
+  - `candidate_normalmap_overlay_previews.png`
+  - `afm_height_warped_to_ebsd60_sem.png`
+  - `afm_amplitude_warped_to_ebsd60_sem.png`
+  - `afm_normalmap_warped_to_ebsd60_sem.png`
+  - `afm_height_overlay_on_ebsd60_sem.png`
+  - `afm_normalmap_overlay_on_ebsd60_sem.png`
+  - `afm_normalmap_overlay_on_ebsd60_ipf.png`
+  - `pt_highres60_afm_alignment_data.npz`
+  - `pt_highres60_afm_alignment_metadata.json`
+
 ### 18. AFM 法向量与 EBSD 表面晶面指数图
 
 - `afm_ebsd_surface_index.py` 用于把已经配准好的 AFM 高度场转换为表面法向量，并把这些法向量与 EBSD orientation 结合，得到样品表面法向在晶体坐标系中的 `{hkl}` / surface-index 数据。
@@ -483,6 +516,7 @@
 - `pt3_same_face_spherical_calibration.py`
 - `pt_highres_30deg_lightglue_calibration.py`
 - `align_pt_afm_sem_ipf.py`
+- `align_pt_highres60_afm.py`
 - `afm_ebsd_surface_index.py`
 - `visualize_edax_projection_sets.py`
 - `visualize_edax_match_3d.py`
@@ -643,6 +677,15 @@ D:\anaconda3\envs\torch\python.exe .\export_pt_highres_data_overview.py `
 ```
 
 ```powershell
+D:\anaconda3\envs\torch\python.exe .\align_pt_highres60_afm.py `
+  --afm "D:\EBSD project\3d数据\pt-afm\Pt-2high resolution.ibw" `
+  --h5 "E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217.edaxh5" `
+  --angle 60 `
+  --edax-ipf "E:\ZHL\20251209Pt-EBSD MAP\pt-high resolution\60.bmp" `
+  --output-dir outputs\pt_highres60_afm_alignment
+```
+
+```powershell
 D:\anaconda3\envs\torch\python.exe .\batch_pt_kikuchi_spherical_calibration.py `
   --h5 D:\EBSD-data\Pt-1\20251209Pt.edaxh5 `
   --up2-root D:\EBSD-data `
@@ -689,6 +732,7 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 - 修正通用 IPF-Z 可视化约束：默认输出 EDAX/OIM-style orientation IPF，不再用 CI/IQ 权重压暗，也不按 phase label 清黑；Pt high-resolution 总览现在会读取软件导出的 `0.bmp, 30.bmp, ..., 330.bmp`，将 H5 orientation IPF 重采样到同一物理显示尺寸，并输出软件-vs-H5 对比图和 chromaticity error 表。
 - 修正 Pt high-resolution 的 H5/UP2 对应关系：正式 12 组 UP2 为 `Area 3` 到 `Area 14`，每组 `470 x 470 x 580320`，但对应角度按真实采集顺序为 `30°, 60°, ..., 330°, 0°`，不是 `0°, 30°, ...`。
 - `export_pt_highres_data_overview.py` 新增 `pt_highres_ohp_overlay_diagnostics.csv`，每次输出 OHP overlay 时同步记录 OHP 线在 band-enhanced Kikuchi 上的响应，避免 H5/OHP 与 UP2 pattern 错位时只靠肉眼发现。
+- 新增 `align_pt_highres60_afm.py`，把 `Pt-2high resolution.ibw` 配准到 Pt high-resolution 60° EBSD 的 H5 SEM/IPF frame，并单独输出 AFM height、amplitude、Scharr normalmap、normalmap color key、LightGlue matches、候选 overlay 预览和 AFM->EBSD60 overlay。
 
 ### 2026-07-21
 
