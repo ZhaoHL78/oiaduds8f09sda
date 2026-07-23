@@ -8,19 +8,25 @@
     "height_unit_scale_to_um": 1000000.0,
     "scan_size_um": 70.0,
     "plane_level": true,
-    "normal_smooth_sigma_px": 1.0
+    "normal_smooth_sigma_px": 1.0,
+    "line_median_correction": {
+      "enabled": true,
+      "axis": "row",
+      "smooth_sigma_px": 25.0,
+      "note": "Gwyddion-like line-level correction: subtract only high-frequency row median offsets before normal/3D rendering."
+    }
   },
   "sem_ebsd": {
     "h5_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217.edaxh5",
     "h5_group": "20251217/Pt foil-high resolution/Area 8-60/OIM Map 1",
-    "up2_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217_Pt foil-high resolution_Area 8_OIM Map 1.up2",
+    "up2_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217_Pt foil-high resolution_Area 4_OIM Map 1.up2",
     "software_ipf_reference_path": "E:/ZHL/20251209Pt-EBSD MAP/pt-high resolution/60.bmp",
     "sem_display_orientation": "flipud",
     "sem_display_to_ebsd_grid": "raw",
     "orientation_convention": "EDAX/OIM H5 Orientations were validated against software IPF-Z; use n_crystal = G @ n_sample for this project."
   },
   "afm_sem_alignment": {
-    "registration_report_path": "outputs/afm_sem_geometric_registration_pt_highres60/registration_report.json",
+    "registration_report_path": "outputs/afm_sem_geometric_registration_pt_highres60/candidate_all_point_homography_14pts/candidate_all_point_homography_report.json",
     "matrix_direction": "AFM_display resized to SEM_display pixels -> SEM_display pixels"
   },
   "surface_index": {

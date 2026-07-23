@@ -496,6 +496,8 @@
 
 ### 18. AFM 法向量与 EBSD 表面晶面指数图
 
+- 这一节的 `afm_ebsd_surface_index.py` 是旧版单体入口，现在只保留为历史工具和若干通用 normalmap/可视化函数来源。
+- 当前正式流程不要直接运行这一旧入口；请使用下一节 `afm_sem_ebsd_standard_pipeline.py`，避免跳过 `SEM display -> EBSD grid` 后再次引入上下翻转或坐标层混淆。
 - `afm_ebsd_surface_index.py` 用于把已经配准好的 AFM 高度场转换为表面法向量，并把这些法向量与 EBSD orientation 结合，得到样品表面法向在晶体坐标系中的 `{hkl}` / surface-index 数据。
 - 这个流程参考 Brüning et al. 2023 的 AFM+EBSD facet type 思路：
   - 从 AFM `HeightRetrace` 输入原始 depthmap；
@@ -545,21 +547,25 @@
 - `afm_sem_ebsd_standard_pipeline.py` 是当前推荐的标准流程入口，用来把已经确认的 AFM-SEM align 结果、H5 SEM-EBSD 固定对应关系和 AFM 高度场晶体学计算串成一个可复用流程。
 - 流程顺序必须保持为：
   1. AFM `HeightRetrace` 读入并按 AFM 软件显示方向 `rot90`，保留 `1024 x 1024` AFM 原始显示网格作为最终 reference。
-  2. 读取已确认的 AFM-SEM 配准报告 `registration_report.json`，其中矩阵定义为 `AFM_display resize 到 SEM_display 尺寸后 -> SEM_display`。
-  3. 读取同一个 EDAX H5 group 中的 `SEM-PRIAS Images/DATA/SEM`、EBSD orientation、IQ、CI、phase、valid 等原始 mapping。
-  4. 先确认 `SEM display -> EBSD grid` 的方向；Pt high-resolution 60° 当前使用 `SEM flipud display`，并且该 frame 与 H5/EDAX IPF-Z grid 同向，所以 `sem_display_to_ebsd_grid=raw`，不再把 SEM display 又翻回 raw SEM。
-  5. 构造完整矩阵 `T_afm_reference_to_ebsd_grid = T_sem_display_to_ebsd_grid @ T_afm_resized_to_sem_display @ T_afm_reference_to_resized`。
-  6. 用 backward sampling 把 EBSD IPF-Z、IQ、CI、phase、valid 和 orientation 先映射到 AFM reference 网格。
-  7. 在 AFM reference 网格中计算 Scharr normalmap，再结合已经映射到 AFM 的 EBSD orientation 计算 `n_crystal = G @ n_sample`。
-  8. 输出连续 surface-normal crystal direction、nearest `{hkl}` 角度诊断和 3D surface-index 图。
+  2. 对 AFM 高度先保留 raw，再做全局 plane leveling 和 Gwyddion-like line median correction；normal、surface-index、3D 和 AFM/SEM overlay 默认使用 line-corrected height，raw height 只作为诊断输出。
+  3. 读取已确认的 AFM-SEM 配准报告，其中矩阵定义为 `AFM_display resize 到 SEM_display 尺寸后 -> SEM_display`。
+  4. 读取同一个 EDAX H5 group 中的 `SEM-PRIAS Images/DATA/SEM`、EBSD orientation、IQ、CI、phase、valid 等原始 mapping。
+  5. 先确认 `SEM display -> EBSD grid` 的方向；Pt high-resolution 60° 当前使用 `SEM flipud display`，并且该 frame 与 H5/EDAX IPF-Z grid 同向，所以 `sem_display_to_ebsd_grid=raw`，不再把 SEM display 又翻回 raw SEM。
+  6. 构造完整矩阵 `T_afm_reference_to_ebsd_grid = T_sem_display_to_ebsd_grid @ T_afm_resized_to_sem_display @ T_afm_reference_to_resized`。
+  7. 用 backward sampling 把 EBSD IPF-Z、IQ、CI、phase、valid 和 orientation 先映射到 AFM reference 网格。
+  8. 在 AFM reference 网格中由 line-corrected height 计算 Scharr normalmap，再结合已经映射到 AFM 的 EBSD orientation 计算 `n_crystal = G @ n_sample`。
+  9. 输出连续 surface-normal crystal direction、nearest `{hkl}` 角度诊断、`surface normal vs IPF-Z` 角度图和 3D surface-index 图。
 - 当前固定 test 配置：
   - 配置：`configs\afm_sem_ebsd_standard_pipeline_pt_highres60.json`
   - AFM: `D:\EBSD project\3d数据\pt-afm\Pt-2high resolution.ibw`
   - EBSD H5: `E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217.edaxh5`
   - H5 group: `20251217/Pt foil-high resolution/Area 8-60/OIM Map 1`
-  - UP2: `E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217_Pt foil-high resolution_Area 8_OIM Map 1.up2`
-  - AFM-SEM align report: `outputs\afm_sem_geometric_registration_pt_highres60\registration_report.json`
+  - UP2: `E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217_Pt foil-high resolution_Area 4_OIM Map 1.up2`
+  - AFM-SEM align report: `outputs\afm_sem_geometric_registration_pt_highres60\candidate_all_point_homography_14pts\candidate_all_point_homography_report.json`
+- Pt high-resolution 60° 的 H5/UP2 对应不能按 Area 号硬配：`Area 8-60/OIM Map 1` 当前对应 UP2 `Area 4`，误用 UP2 `Area 8` 会让同 index 的 Kikuchi pattern 与 H5/OHP band 明显错位。
 - 当前本机 test 已跑通，输出保存在 `outputs\afm_sem_ebsd_standard_pipeline_pt_highres60\`：
+  - `figures\00_afm_raw_height_reference.png`
+  - `figures\01_afm_height_reference_line_corrected.png`
   - `figures\03_afm_to_sem_alignment_check.png`
   - `figures\04_sem_ebsd_correspondence_check.png`
   - `figures\05_ebsd_ipf_z_aligned_to_afm_reference.png`
@@ -568,14 +574,17 @@
   - `figures\08_afm_sample_normal_reference.png`
   - `figures\10_surface_index_afm_reference.png`
   - `figures\11_surface_index_over_afm_height_reference.png`
+  - `figures\13_surface_normal_vs_ipf_z_angle_deg.png`
   - `figures\14_selected_kikuchi_ohp_bands.png`
   - `figures\15_standard_pipeline_montage.png`
   - `figures\16_surface_index_3d.png`
   - `figures\16_surface_index_3d_interactive.html`
+  - `figures\17_afm_height_3d_gold_line_corrected.png`
   - `data\afm_reference_ebsd_mapping_and_surface_index.npz`
   - `data\standard_pipeline_metadata.json`
   - `data\nearest_hkl_summary.csv`
-- 这个流程的关键约束是：EBSD mapping 必须先被映射到 AFM reference，再做 AFM 法向和 crystal-frame surface index；不能跳过 `SEM display -> EBSD grid` 这层，也不能从 IPF 彩色图反推 orientation。
+- `export_verified_kikuchi_ohp_overlay.py` 是固定的 H5/OHP/UP2 对应检查脚本。它复用 `export_publication_h5_kikuchi_bands.py` 中的 `normal_theta_rho+_yup` EDAX OHP 约定，并可在 `--up2-root` 下自动扫描同 count 的 UP2 候选，输出透明 Kikuchi、透明 OHP bands、overlay、候选 UP2 score 和 OHP convention score。
+- 这个流程的关键约束是：EBSD mapping 必须先被映射到 AFM reference，再做 AFM 法向和 crystal-frame surface index；不能跳过 `SEM display -> EBSD grid` 这层，不能从 IPF 彩色图反推 orientation，也不能把 H5 group 和 UP2 文件按名字相似度强行配对。
 
 主要代码：
 
@@ -590,8 +599,9 @@
 - `align_pt_afm_sem_ipf.py`
 - `align_pt_highres60_afm.py`
 - `afm_sem_geometric_registration.py`
-- `afm_ebsd_surface_index.py`
+- `afm_ebsd_surface_index.py`（legacy utility，不作为当前推荐入口）
 - `afm_sem_ebsd_standard_pipeline.py`
+- `export_verified_kikuchi_ohp_overlay.py`
 - `visualize_edax_projection_sets.py`
 - `visualize_edax_match_3d.py`
 - `visualize_scan_position_pc_correction.py`
@@ -804,14 +814,19 @@ D:\anaconda3\envs\torch\python.exe .\align_pt_afm_sem_ipf.py `
 ```
 
 ```powershell
-D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
-  --afm "C:\Users\WHJ\OneDrive\xwechat_files\wxid_udhlesdsllnu22_8cd9\msg\file\2026-07\Pt-1(1).ibw" `
-  --alignment-metadata outputs\pt_afm_sem_ipf_alignment\afm_sem_ipf_alignment_metadata.json `
-  --finetuned-ipf-metadata outputs\pt3_area90_finetuned_ipf_map\pt3_area90_finetuned_ipf_metadata.json `
-  --h5 "D:\EBSD project\EBSD-data\Pt-1\20251209Pt.edaxh5" `
-  --h5-group "20251209/Pt-3/Area 3-90/OIM Map 1" `
-  --up2 "D:\EBSD project\EBSD-data\Pt-1\20251209_Pt-3_Area 4_OIM Map 1.up2" `
-  --output-dir outputs\pt_afm_ebsd_scharr_surface_index
+python .\afm_sem_ebsd_standard_pipeline.py `
+  --config configs\afm_sem_ebsd_standard_pipeline_pt_highres60.json
+```
+
+```powershell
+python .\export_verified_kikuchi_ohp_overlay.py `
+  --h5 "E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217.edaxh5" `
+  --h5-group "20251217/Pt foil-high resolution/Area 8-60/OIM Map 1" `
+  --index 190664 `
+  --row 236 `
+  --col 448 `
+  --up2-root "E:\ZHL\EBSD-RAW\20251217Pt-high resolution" `
+  --out-dir outputs\verified_kikuchi_ohp_pt_highres60_selected
 ```
 
 ## 版本改动
@@ -823,6 +838,12 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 - 新增 `afm_sem_ebsd_standard_pipeline.py` 与 `configs/afm_sem_ebsd_standard_pipeline_pt_highres60.json`，标准化为 `AFM reference -> SEM display -> EBSD grid -> AFM-reference EBSD maps -> AFM normal -> surface index` 的完整流程。
 - Pt high-resolution 60° 当前确认使用 `SEM flipud display` 与 EBSD/IPF grid 同向的约束，即 `sem_display_to_ebsd_grid=raw`；selected point 从错误流程的 `row=483` 修正为 `row=236, col=448, idx=190664`。
 - 已在本机 test 跑通，输出 AFM-SEM alignment check、SEM-EBSD correspondence check、EBSD IPF/IQ/CI aligned to AFM reference、AFM normal、surface index、Kikuchi+OHP、montage 和 3D 图；本地输出目录为 `outputs/afm_sem_ebsd_standard_pipeline_pt_highres60/`，不提交 GitHub。
+- 修正 Pt high-resolution 60° 的 H5/UP2 对应关系：`Area 8-60/OIM Map 1` 固定对应 UP2 `20251217_Pt foil-high resolution_Area 4_OIM Map 1.up2`，不再误用 `Area 8` UP2。
+- 新增 `export_verified_kikuchi_ohp_overlay.py`，把 H5/OHP band 与 raw UP2 Kikuchi 的 overlay 固定为一个可复用质检脚本；脚本复用 `normal_theta_rho+_yup` OHP 约定，并可自动扫描同 count 的 UP2 候选，输出透明 PNG、band CSV、UP2 score 和 OHP convention score。
+- 修正 AFM IBW 通道 label 解析：现在会扫描所有 label axis，Pt high-resolution AFM 正确记录为 `HeightRetrace / AmplitudeRetrace / PhaseRetrace / ZSensorRetrace`，主高度通道为 `HeightRetrace`。
+- 在标准流程中加入 Gwyddion-like line median correction：raw height 保留为诊断图，line-corrected height 用于 AFM/SEM overlay、normal、surface-index 和 3D height view；本次 Pt high-resolution 60° line offset 约为 `-0.0133` 到 `+0.0129 um`。
+- 标准流程改用 `candidate_all_point_homography_14pts` 作为当前 AFM-SEM 基线配准，控制点 RMSE `3.71 px`、median `3.03 px`、95th percentile `6.36 px`，比 RANSAC 版本更照顾左下角晶界，但仍在 metadata 中保留局部残差。
+- 新增 `surface normal vs conventional IPF-Z` 角度图，避免 surface-index RGB 在同一晶粒内颜色变化不明显时误判为“AFM slope 没有进入晶体学计算”。
 
 ### 2026-07-22
 

@@ -20,6 +20,13 @@ import numpy as np
 from matplotlib.colors import hsv_to_rgb
 from scipy import ndimage
 
+from export_publication_h5_kikuchi_bands import (
+    PUBLICATION_VARIANT,
+    line_segment_from_band,
+    read_bands,
+    read_ohp_header,
+)
+
 
 LINE_COLORS = ("#fee400", "#c800ff", "#0032ff", "#00e020", "#ff4040", "#00bfff", "#ff7f27", "#9b30ff")
 HKL_CANDIDATES = np.array(
@@ -108,13 +115,14 @@ def read_afm_height(config: dict[str, Any]) -> tuple[np.ndarray, dict[str, Any]]
     note = parse_igor_note(wave.get("note", b""))
     labels_raw = wave.get("labels", [])
     labels: list[str] = []
-    for label in labels_raw[-1] if labels_raw else []:
-        if isinstance(label, bytes):
-            text = label.decode("utf-8", "ignore").strip("\x00")
-        else:
-            text = str(label).strip("\x00")
-        if text:
-            labels.append(text)
+    for axis_labels in labels_raw:
+        for label in axis_labels:
+            if isinstance(label, bytes):
+                text = label.decode("utf-8", "ignore").strip("\x00")
+            else:
+                text = str(label).strip("\x00")
+            if text:
+                labels.append(text)
     if data.ndim == 3:
         channel = afm_cfg["height_channel"]
         if channel in labels:
@@ -354,6 +362,34 @@ def plane_level(height_um: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
     return (height_um - plane).astype(np.float32), {"a_um_per_col": float(coeff[0]), "b_um_per_row": float(coeff[1]), "c_um": float(coeff[2])}
 
 
+def line_median_correction(height_um: np.ndarray, config: dict[str, Any] | None) -> tuple[np.ndarray, dict[str, Any]]:
+    if not config or not bool(config.get("enabled", False)):
+        return height_um.astype(np.float32), {"enabled": False}
+    axis = str(config.get("axis", "row")).lower()
+    sigma = float(config.get("smooth_sigma_px", 25.0))
+    corrected = height_um.astype(np.float32).copy()
+    if axis == "row":
+        med = np.nanmedian(corrected, axis=1)
+        baseline = ndimage.gaussian_filter1d(med.astype(np.float32), sigma=max(sigma, 0.0), mode="nearest")
+        offset = med - baseline
+        corrected = corrected - offset[:, None].astype(np.float32)
+    elif axis == "col":
+        med = np.nanmedian(corrected, axis=0)
+        baseline = ndimage.gaussian_filter1d(med.astype(np.float32), sigma=max(sigma, 0.0), mode="nearest")
+        offset = med - baseline
+        corrected = corrected - offset[None, :].astype(np.float32)
+    else:
+        raise ValueError(f"Unsupported line correction axis: {axis}")
+    return corrected.astype(np.float32), {
+        "enabled": True,
+        "axis": axis,
+        "smooth_sigma_px": sigma,
+        "offset_min_um": float(np.nanmin(offset)),
+        "offset_max_um": float(np.nanmax(offset)),
+        "offset_std_um": float(np.nanstd(offset)),
+    }
+
+
 def compute_afm_normals(
     height_um: np.ndarray,
     scan_size_um: float,
@@ -361,13 +397,15 @@ def compute_afm_normals(
     plane_level_enabled: bool,
     row_derivative_sign: int,
     afm_to_sem_rotation: np.ndarray,
+    line_correction_config: dict[str, Any] | None = None,
 ) -> dict[str, np.ndarray | float | dict[str, float]]:
     if plane_level_enabled:
         leveled, plane_meta = plane_level(height_um)
     else:
         leveled = height_um.astype(np.float32)
         plane_meta = {}
-    smooth = ndimage.gaussian_filter(leveled, sigma=float(smooth_sigma_px), mode="nearest") if smooth_sigma_px > 0 else leveled
+    line_corrected, line_meta = line_median_correction(leveled, line_correction_config)
+    smooth = ndimage.gaussian_filter(line_corrected, sigma=float(smooth_sigma_px), mode="nearest") if smooth_sigma_px > 0 else line_corrected
     pitch_x = scan_size_um / max(height_um.shape[1] - 1, 1)
     pitch_y = scan_size_um / max(height_um.shape[0] - 1, 1)
     dz_dx = cv2.Scharr(smooth.astype(np.float32), cv2.CV_32F, 1, 0, scale=1.0 / 32.0) / max(pitch_x, 1e-12)
@@ -382,6 +420,7 @@ def compute_afm_normals(
     aspect_deg = np.degrees(np.arctan2(normals_sample[..., 1], normals_sample[..., 0])).astype(np.float32)
     return {
         "height_leveled_um": leveled.astype(np.float32),
+        "height_line_corrected_um": line_corrected.astype(np.float32),
         "height_smoothed_um": smooth.astype(np.float32),
         "dz_dx": dz_dx.astype(np.float32),
         "dz_drow": dz_drow.astype(np.float32),
@@ -392,6 +431,7 @@ def compute_afm_normals(
         "pitch_x_um": float(pitch_x),
         "pitch_y_um": float(pitch_y),
         "plane_level": plane_meta,
+        "line_correction": line_meta,
     }
 
 
@@ -586,50 +626,31 @@ def read_ohp_segments(h5_path: Path, h5_group: str, index: int, pattern_shape: t
     h, w = pattern_shape
     with h5py.File(h5_path, "r") as h5:
         group = h5[h5_group]
-        header = group["EBSD/OHP/HEADER"]
-        circle_size = float(np.asarray(header["Circle Size"][()]).reshape(-1)[0])
-        raw = np.asarray(group["EBSD/OHP/DATA/DATA"][index], dtype=np.float32).reshape(-1, 4)
+        header = read_ohp_header(group)
+        bands = read_bands(group, index)
     segments = []
-    cx = (w - 1) / 2.0
-    cy = (h - 1) / 2.0
-    x_min, x_max = -cx, cx
-    y_min, y_max = -cy, cy
-    for band_id, (rho_bin, theta_deg, width, intensity) in enumerate(raw):
-        if not np.isfinite([rho_bin, theta_deg, width, intensity]).all() or width <= 0 or intensity <= 0:
+    for band_order, band in enumerate(bands):
+        segment = line_segment_from_band(
+            band=band,
+            header=header,
+            height=h,
+            width=w,
+            variant=PUBLICATION_VARIANT,
+            band_index=band_order,
+        )
+        if segment is None:
             continue
-        rho_px = (float(rho_bin) - circle_size / 2.0) * (min(h, w) / circle_size)
-        theta = math.radians(float(theta_deg))
-        c = math.cos(theta)
-        s = math.sin(theta)
-        pts: list[tuple[float, float]] = []
-        if abs(s) > 1e-8:
-            for x in (x_min, x_max):
-                y = (rho_px - x * c) / s
-                if y_min <= y <= y_max:
-                    pts.append((x, y))
-        if abs(c) > 1e-8:
-            for y in (y_min, y_max):
-                x = (rho_px - y * s) / c
-                if x_min <= x <= x_max:
-                    pts.append((x, y))
-        unique: list[tuple[float, float]] = []
-        for p in pts:
-            if not any(abs(p[0] - q[0]) < 1e-4 and abs(p[1] - q[1]) < 1e-4 for q in unique):
-                unique.append(p)
-        if len(unique) < 2:
-            continue
-        (x0, y0), (x1, y1) = unique[:2]
         segments.append(
             {
-                "band_id": band_id,
-                "row0": cy - y0,
-                "col0": x0 + cx,
-                "row1": cy - y1,
-                "col1": x1 + cx,
-                "rho_bin": float(rho_bin),
-                "theta_deg": float(theta_deg),
-                "bandwidth": float(width),
-                "intensity": float(intensity),
+                "band_id": band_order,
+                "row0": float(segment.row0),
+                "col0": float(segment.col0),
+                "row1": float(segment.row1),
+                "col1": float(segment.col1),
+                "rho_bin": float(band.rho_bin),
+                "theta_deg": float(band.theta_deg),
+                "bandwidth": float(band.width),
+                "intensity": float(band.intensity),
             }
         )
     return segments
@@ -704,6 +725,23 @@ def save_3d_surface_png(path: Path, height_um: np.ndarray, rgb: np.ndarray, mask
     ax.set_ylabel("y (um)")
     ax.set_zlabel("height (um)")
     ax.view_init(elev=52, azim=-62)
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_3d_height_gold_png(path: Path, height_um: np.ndarray, scan_size_um: float, stride: int, dpi: int) -> None:
+    h = height_um[::stride, ::stride]
+    yy, xx = np.indices(h.shape)
+    x = xx * scan_size_um / max(h.shape[1] - 1, 1)
+    y = yy * scan_size_um / max(h.shape[0] - 1, 1)
+    fig = plt.figure(figsize=(8.5, 6.4), dpi=dpi)
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot_surface(x, y, h, color=(0.95, 0.68, 0.0), rstride=1, cstride=1, linewidth=0, antialiased=False, shade=True)
+    ax.set_title("AFM 3D height, line-corrected")
+    ax.set_xlabel("x (um)")
+    ax.set_ylabel("y (um)")
+    ax.set_zlabel("height (um)")
+    ax.view_init(elev=38, azim=-68)
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
 
@@ -834,24 +872,33 @@ def main() -> None:
         bool(config["afm"].get("plane_level", True)),
         int(normal_cfg.get("image_row_derivative_sign", 1)),
         rotation,
+        config["afm"].get("line_median_correction"),
     )
     g = ebsd_on_afm["orientation"].astype(np.float32)
     normals_sample = normals["normals_sample"].astype(np.float32)
     n_crystal = np.einsum("...ij,...j->...i", g, normals_sample).astype(np.float32)
     n_crystal /= np.linalg.norm(n_crystal, axis=2, keepdims=True) + 1e-12
     n_crystal[~valid] = 0.0
+    ipf_z_crystal = g[..., :, 2].astype(np.float32)
+    ipf_z_crystal /= np.linalg.norm(ipf_z_crystal, axis=2, keepdims=True) + 1e-12
+    surface_vs_ipfz_angle = np.degrees(
+        np.arccos(np.clip(np.sum(n_crystal * ipf_z_crystal, axis=2), -1.0, 1.0))
+    ).astype(np.float32)
+    surface_vs_ipfz_angle[~valid] = np.nan
     folded = fold_cubic(n_crystal)
     surface_rgb = facet_type_rgb(folded)
     surface_rgb[~valid] = 0.0
     best_hkl, angle_hkl = nearest_hkl(folded)
     angle_hkl[~valid] = np.nan
     normal_rgb = normal_direction_rgb(normals_sample, float(normal_cfg.get("normal_tilt_ref_deg", 16.0)))
-    height_rgb = plt.get_cmap("copper")(robust_rescale(afm_height))[..., :3].astype(np.float32)
+    height_for_display = normals["height_line_corrected_um"].astype(np.float32)
+    height_rgb = plt.get_cmap("copper")(robust_rescale(height_for_display))[..., :3].astype(np.float32)
 
     # Stage 1: AFM/SEM/EBSD spatial checks.
-    save_rgb(fig_dir / "01_afm_height_reference.png", height_rgb, "AFM height reference grid", dpi, marker=marker_afm)
+    save_rgb(fig_dir / "00_afm_raw_height_reference.png", plt.get_cmap("copper")(robust_rescale(afm_height))[..., :3].astype(np.float32), "Raw AFM height reference grid", dpi, marker=marker_afm)
+    save_rgb(fig_dir / "01_afm_height_reference_line_corrected.png", height_rgb, "AFM height reference, line-corrected", dpi, marker=marker_afm)
     save_scalar(fig_dir / "02_sem_display_used_for_alignment.png", sem_display, "H5 SEM display used for AFM alignment", "gray", "intensity", dpi)
-    afm_warped, afm_warp_mask = warp_resized_afm_to_sem(afm_height, sem_display.shape, h_afm_resized_to_sem)
+    afm_warped, afm_warp_mask = warp_resized_afm_to_sem(height_for_display, sem_display.shape, h_afm_resized_to_sem)
     afm_warp_rgb = plt.get_cmap("copper")(afm_warped)[..., :3].astype(np.float32)
     save_overlay(fig_dir / "03_afm_to_sem_alignment_check.png", sem_display, afm_warp_rgb, afm_warp_mask, alpha, "AFM height warped onto SEM display", marker_sem, dpi)
     software_ipf = read_optional_rgb(config["sem_ebsd"].get("software_ipf_reference_path"), sem_display.shape)
@@ -864,8 +911,9 @@ def main() -> None:
     save_rgb(fig_dir / "08_afm_sample_normal_reference.png", normal_rgb, "AFM sample-normal map on AFM reference", dpi, marker=marker_afm)
     save_scalar(fig_dir / "09_afm_slope_deg_reference.png", normals["slope_deg"], "AFM local slope", "magma", "deg", dpi)
     save_rgb(fig_dir / "10_surface_index_afm_reference.png", surface_rgb, "AFM surface normal in EBSD crystal frame", dpi, valid, marker_afm)
-    save_overlay(fig_dir / "11_surface_index_over_afm_height_reference.png", afm_height, surface_rgb, valid, float(config["visualization"].get("surface_overlay_alpha", 0.82)), "Surface index over AFM height reference", marker_afm, dpi)
+    save_overlay(fig_dir / "11_surface_index_over_afm_height_reference.png", height_for_display, surface_rgb, valid, float(config["visualization"].get("surface_overlay_alpha", 0.82)), "Surface index over line-corrected AFM height reference", marker_afm, dpi)
     save_scalar(fig_dir / "12_nearest_hkl_angle_deg_reference.png", angle_hkl, "Angle to nearest low-index cubic plane", "magma", "deg", dpi)
+    save_scalar(fig_dir / "13_surface_normal_vs_ipf_z_angle_deg.png", surface_vs_ipfz_angle, "AFM surface normal vs conventional IPF-Z direction", "viridis", "deg", dpi)
     color_key_path = fig_dir / "13_normal_azimuth_color_key.png"
     save_normal_color_wheel(color_key_path, float(normal_cfg.get("normal_tilt_ref_deg", 16.0)), dpi)
 
@@ -884,8 +932,9 @@ def main() -> None:
     kikuchi_path = fig_dir / "14_selected_kikuchi_ohp_bands.png"
     save_kikuchi_with_bands(kikuchi_path, pattern, ohp_segments, selected_meta, dpi)
     save_coupling_montage(fig_dir / "15_standard_pipeline_montage.png", kikuchi_path, height_rgb, ipf_on_afm, normal_rgb, surface_rgb, color_key_path, marker_afm, dpi)
-    save_3d_surface_png(fig_dir / "16_surface_index_3d.png", normals["height_leveled_um"], surface_rgb, valid, float(afm_meta["scan_size_um"]), int(config["visualization"].get("plot_3d_stride", 5)), dpi)
-    html_written = save_3d_surface_html(fig_dir / "16_surface_index_3d_interactive.html", normals["height_leveled_um"], surface_rgb, valid, float(afm_meta["scan_size_um"]), int(config["visualization"].get("plot_3d_stride", 5)))
+    save_3d_surface_png(fig_dir / "16_surface_index_3d.png", height_for_display, surface_rgb, valid, float(afm_meta["scan_size_um"]), int(config["visualization"].get("plot_3d_stride", 5)), dpi)
+    save_3d_height_gold_png(fig_dir / "17_afm_height_3d_gold_line_corrected.png", height_for_display, float(afm_meta["scan_size_um"]), int(config["visualization"].get("plot_3d_stride", 5)), dpi)
+    html_written = save_3d_surface_html(fig_dir / "16_surface_index_3d_interactive.html", height_for_display, surface_rgb, valid, float(afm_meta["scan_size_um"]), int(config["visualization"].get("plot_3d_stride", 5)))
 
     threshold = float(normal_cfg.get("hkl_angle_threshold_deg", 10.0))
     write_hkl_summary(data_dir / "nearest_hkl_summary.csv", best_hkl, angle_hkl, valid, threshold)
@@ -893,6 +942,7 @@ def main() -> None:
         data_dir / "afm_reference_ebsd_mapping_and_surface_index.npz",
         afm_height_um=afm_height.astype(np.float32),
         afm_height_leveled_um=normals["height_leveled_um"],
+        afm_height_line_corrected_um=normals["height_line_corrected_um"],
         afm_height_smoothed_um=normals["height_smoothed_um"],
         sem_display_x=mapping["sem_display_x"],
         sem_display_y=mapping["sem_display_y"],
@@ -910,6 +960,7 @@ def main() -> None:
         normals_crystal=n_crystal,
         folded_cubic_direction=folded,
         surface_rgb=surface_rgb,
+        surface_vs_ipf_z_angle_deg=surface_vs_ipfz_angle,
         nearest_hkl_index=best_hkl,
         nearest_hkl_angle_deg=angle_hkl,
         ipf_z_rgb_on_afm=ipf_on_afm,
@@ -939,6 +990,11 @@ def main() -> None:
             "control_point_metrics": registration.get("control_point_metrics", {}),
             "transforms": {name: value.tolist() for name, value in transforms.items()},
             "normal_in_plane_rotation": rotation.tolist(),
+        },
+        "afm_height_processing": {
+            "plane_level": normals["plane_level"],
+            "line_correction": normals["line_correction"],
+            "normal_smooth_sigma_px": float(config["afm"].get("normal_smooth_sigma_px", 1.0)),
         },
         "selected_point": {
             "afm_x_px": selected_x,
