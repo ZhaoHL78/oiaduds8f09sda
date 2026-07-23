@@ -491,7 +491,8 @@
   - 默认不启用非刚性配准；只有全局模型残差呈明确空间系统性时，才允许单独尝试强正则化的非刚性模型。
   - 最终把 AFM 浮点高度场重采样到 SEM frame，再在统一坐标系下重新计算 Scharr normalmap，而不是 warp 旧 RGB normalmap。
 - 当前输出在 `outputs/afm_sem_geometric_registration_pt_highres60/`。自动晶界提取可以作为精修约束，但不够可靠到自动生成最终矩阵，因此程序会在缺少人工控制点时停止，并明确返回 `needs_control_points`。
-- 当前 8 对人工控制点运行结果选择 `affine` 作为最终模型：控制点 RMSE `1.94 px`，median `0.71 px`，max `4.88 px`。距离场精修曾尝试但被自动拒绝，因为自动 mask 中的非对应边界会把控制点 RMSE 拉到 `41.14 px`。
+- 当前 14 对人工控制点覆盖左下和右上区域后，正式模型选择 `homography`：控制点 RMSE `4.39 px`，median `3.24 px`，max `12.07 px`。右上角新增点证明 residual 不是单纯 affine 能解释，homography 更符合 SEM 70° tilt correction 后的残余投影畸变。
+- 同时保留 `candidate_all_point_homography_14pts` 诊断输出：它使用全部人工控制点无 RANSAC 拟合，RMSE `3.71 px`、median `3.03 px`、max `7.07 px`，但由于不剔除控制点异常，只作为候选对照。
 
 ### 18. AFM 法向量与 EBSD 表面晶面指数图
 
@@ -793,6 +794,8 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 - 当前最终模型选择 affine：`AFM_display -> SEM_display` 矩阵为 `[[0.560985, 0.226098, 79.086979], [-0.143574, 0.910537, 40.717195]]`，控制点 RMSE `1.94 px`、median `0.71 px`、max `4.88 px`。
 - 距离场精修已执行但被自动拒绝：自动 AFM/SEM 晶界 mask 混有非对应边界，精修候选会把控制点 RMSE 从 `1.94 px` 拉高到 `41.14 px`。新脚本加入 control-point guard，今后不会让不可靠的距离场精修覆盖人工控制点模型。
 - 移除 `afm_sem_geometric_registration.py` 对旧 LightGlue/torch 脚本的 import，避免 Windows OpenMP runtime 冲突；新脚本只依赖 `numpy/scipy/opencv/scikit-image/matplotlib/h5py/igor2`。
+- 右上角继续补点后，14 对控制点使正式模型从 affine 切换为 homography。修正脚本逻辑：当全局模型为 homography 时，不再调用 affine-only distance refinement，避免 3x3 homography 被误当成 2x3 affine。
+- 当前正式 14 点 homography 矩阵为 `[[0.577732, 0.262868, 79.412139], [-0.161358, 0.942799, 48.373020], [-0.000033, 0.000283, 1.0]]`；另输出 `candidate_all_point_homography_14pts/` 作为全部控制点拟合候选，对照右上/左下 residual。
 
 ### 2026-07-21
 

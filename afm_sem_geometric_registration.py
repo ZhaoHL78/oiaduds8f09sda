@@ -921,7 +921,7 @@ def run_pipeline(config_path: Path, pick_points: bool = False, prepare_only: boo
         "reason": "Distance-field refinement disabled by config.",
         "initial_control_point_metrics": chosen_all_metrics,
     }
-    if config.get("distance_refinement", {}).get("enabled", True):
+    if config.get("distance_refinement", {}).get("enabled", True) and chosen.name != "homography":
         candidate = affine_refine_distance(chosen, afm_features, sem_features, config, output_dir)
         candidate.name = "refined_affine"
         candidate.residuals_px = np.linalg.norm(transform_points(candidate.matrix, afm_points, "refined_affine") - sem_points, axis=1)
@@ -948,6 +948,13 @@ def run_pipeline(config_path: Path, pick_points: bool = False, prepare_only: boo
             refined = chosen
             refined.train_metrics = chosen_all_metrics
             refined.holdout_metrics = None
+    elif chosen.name == "homography":
+        distance_refinement_note = {
+            "attempted": False,
+            "accepted": False,
+            "reason": "Skipped because the selected global model is homography; the implemented distance-field refinement is affine-only.",
+            "initial_control_point_metrics": chosen_all_metrics,
+        }
 
     afm_warped, common_mask = warp_image(data.afm_display_gray, refined.matrix, refined.name, data.sem_display.shape)
     afm_skel_warped, _ = warp_image(afm_features.skeleton.astype(np.float32), refined.matrix, refined.name, data.sem_display.shape, cv2.INTER_NEAREST)
