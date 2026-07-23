@@ -435,6 +435,176 @@ def compute_afm_normals(
     }
 
 
+def extract_afm_grain_labels(height_um: np.ndarray, valid_mask: np.ndarray, config: dict[str, Any] | None) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    cfg = config or {}
+    if not bool(cfg.get("enabled", True)):
+        labels = np.where(valid_mask, 1, 0).astype(np.int32)
+        return labels, np.zeros_like(valid_mask, dtype=bool), np.zeros_like(height_um, dtype=np.float32), {"enabled": False, "grain_count": 1}
+    smooth_sigma = float(cfg.get("segmentation_smooth_sigma_px", 5.0))
+    local_sigma = float(cfg.get("local_background_sigma_px", 28.0))
+    percentile = float(cfg.get("boundary_response_percentile", 93.0))
+    close_px = int(cfg.get("boundary_close_px", 5))
+    dilate_px = int(cfg.get("boundary_dilate_px", 2))
+    min_grain_area = int(cfg.get("min_grain_area_px", 12000))
+    grad_weight = float(cfg.get("gradient_weight", 1.0))
+    valley_weight = float(cfg.get("valley_weight", 1.35))
+
+    smooth = ndimage.gaussian_filter(height_um.astype(np.float32), sigma=smooth_sigma, mode="nearest")
+    grad_x = cv2.Scharr(smooth, cv2.CV_32F, 1, 0, scale=1.0 / 32.0)
+    grad_y = cv2.Scharr(smooth, cv2.CV_32F, 0, 1, scale=1.0 / 32.0)
+    grad = np.hypot(grad_x, grad_y).astype(np.float32)
+    local_bg = ndimage.gaussian_filter(smooth, sigma=local_sigma, mode="nearest")
+    valley = np.maximum(local_bg - smooth, 0.0).astype(np.float32)
+    response = grad_weight * robust_rescale(grad, 5.0, 99.5) + valley_weight * robust_rescale(valley, 5.0, 99.5)
+    response = ndimage.gaussian_filter(response.astype(np.float32), sigma=float(cfg.get("response_smooth_sigma_px", 1.2)), mode="nearest")
+    finite_response = response[valid_mask & np.isfinite(response)]
+    threshold = float(np.percentile(finite_response, percentile)) if finite_response.size else float("inf")
+    boundary = (response >= threshold) & valid_mask
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * close_px + 1, 2 * close_px + 1))
+    boundary_u8 = cv2.morphologyEx(boundary.astype(np.uint8), cv2.MORPH_CLOSE, kernel_close)
+    if dilate_px > 0:
+        kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilate_px + 1, 2 * dilate_px + 1))
+        boundary_u8 = cv2.dilate(boundary_u8, kernel_dilate, iterations=1)
+    boundary = boundary_u8.astype(bool) & valid_mask
+
+    core = valid_mask & ~boundary
+    n_labels, core_labels = cv2.connectedComponents(core.astype(np.uint8), connectivity=8)
+    labels = core_labels.astype(np.int32)
+    if n_labels > 1:
+        counts = np.bincount(labels.reshape(-1), minlength=n_labels)
+        keep = counts >= min_grain_area
+        keep[0] = False
+        labels[~keep[labels]] = 0
+    if np.any(labels > 0):
+        missing = valid_mask & (labels == 0)
+        if np.any(missing):
+            _, indices = ndimage.distance_transform_edt(labels == 0, return_indices=True)
+            labels[missing] = labels[indices[0][missing], indices[1][missing]]
+    labels[~valid_mask] = 0
+
+    unique = [int(v) for v in np.unique(labels) if v > 0]
+    remap = {old: new for new, old in enumerate(unique, start=1)}
+    relabeled = np.zeros_like(labels, dtype=np.int32)
+    for old, new in remap.items():
+        relabeled[labels == old] = new
+    relabeled[~valid_mask] = 0
+    grain_boundary = valid_mask & (relabeled > 0) & (
+        (relabeled != ndimage.grey_erosion(relabeled, size=(3, 3))) | (relabeled != ndimage.grey_dilation(relabeled, size=(3, 3)))
+    )
+    meta = {
+        "enabled": True,
+        "grain_count": int(len(unique)),
+        "boundary_response_percentile": percentile,
+        "response_threshold": threshold,
+        "min_grain_area_px": min_grain_area,
+        "boundary_pixels": int(grain_boundary.sum()),
+    }
+    return relabeled, grain_boundary, response.astype(np.float32), meta
+
+
+def label_to_rgb(labels: np.ndarray) -> np.ndarray:
+    rgb = np.zeros((*labels.shape, 3), dtype=np.float32)
+    for label in [int(v) for v in np.unique(labels) if v > 0]:
+        hue = (0.61803398875 * label) % 1.0
+        color = hsv_to_rgb(np.array([[[hue, 0.54, 0.95]]], dtype=np.float32))[0, 0]
+        rgb[labels == label] = color
+    return rgb
+
+
+def regularize_orientation_by_afm_grains(
+    ebsd_on_afm: dict[str, np.ndarray],
+    valid: np.ndarray,
+    grain_labels: np.ndarray,
+    config: dict[str, Any] | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[dict[str, Any]]]:
+    cfg = config or {}
+    if not bool(cfg.get("enabled", True)):
+        return (
+            ebsd_on_afm["orientation"].astype(np.float32),
+            ebsd_on_afm["phase"].astype(np.int16),
+            valid.astype(bool),
+            [],
+        )
+    core_erode = int(cfg.get("orientation_core_erode_px", 8))
+    min_pixels = int(cfg.get("min_orientation_pixels", 64))
+    method = str(cfg.get("method", "highest_ci_iq"))
+    g_src = ebsd_on_afm["orientation"].astype(np.float32)
+    phase_src = ebsd_on_afm["phase"].astype(np.int16)
+    ci = np.nan_to_num(ebsd_on_afm["ci"].astype(np.float32), nan=0.0)
+    iq_scaled = robust_rescale(np.nan_to_num(ebsd_on_afm["iq"].astype(np.float32), nan=0.0))
+    score = ci * iq_scaled
+    out_g = g_src.copy()
+    out_phase = phase_src.copy()
+    out_valid = valid.copy()
+    rows: list[dict[str, Any]] = []
+    for label in [int(v) for v in np.unique(grain_labels) if v > 0]:
+        region = (grain_labels == label) & valid
+        if int(region.sum()) < min_pixels:
+            out_valid[grain_labels == label] = False
+            continue
+        core = region.copy()
+        if core_erode > 0:
+            dist = ndimage.distance_transform_edt(region)
+            core = region & (dist >= core_erode)
+            if int(core.sum()) < min_pixels:
+                core = region
+        phase_values, phase_counts = np.unique(phase_src[core & (phase_src > 0)], return_counts=True)
+        if phase_values.size == 0:
+            out_valid[grain_labels == label] = False
+            continue
+        phase_value = int(phase_values[int(np.argmax(phase_counts))])
+        candidates = core & (phase_src == phase_value)
+        if int(candidates.sum()) < min_pixels:
+            candidates = region & (phase_src == phase_value)
+        yy, xx = np.where(candidates)
+        if yy.size == 0:
+            out_valid[grain_labels == label] = False
+            continue
+        if method == "polar_mean":
+            weights = score[yy, xx].astype(np.float64)
+            weights = weights / max(float(weights.sum()), 1e-12)
+            mat = np.tensordot(weights, g_src[yy, xx].astype(np.float64), axes=(0, 0))
+            u, _s, vt = np.linalg.svd(mat)
+            representative = (u @ vt).astype(np.float32)
+            if np.linalg.det(representative) < 0:
+                u[:, -1] *= -1.0
+                representative = (u @ vt).astype(np.float32)
+            source_y = int(yy[np.argmax(score[yy, xx])])
+            source_x = int(xx[np.argmax(score[yy, xx])])
+        else:
+            best_idx = int(np.argmax(score[yy, xx]))
+            source_y = int(yy[best_idx])
+            source_x = int(xx[best_idx])
+            representative = g_src[source_y, source_x].astype(np.float32)
+        out_g[grain_labels == label] = representative
+        out_phase[grain_labels == label] = phase_value
+        out_valid[grain_labels == label] = np.any(region)
+        rows.append(
+            {
+                "afm_grain_id": label,
+                "pixels": int((grain_labels == label).sum()),
+                "valid_pixels": int(region.sum()),
+                "orientation_source_x": source_x,
+                "orientation_source_y": source_y,
+                "source_ci": float(ci[source_y, source_x]),
+                "source_iq": float(ebsd_on_afm["iq"][source_y, source_x]),
+                "phase": phase_value,
+                "method": method,
+            }
+        )
+    out_valid &= grain_labels > 0
+    return out_g.astype(np.float32), out_phase.astype(np.int16), out_valid.astype(bool), rows
+
+
+def write_rows_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def normal_direction_rgb(normals: np.ndarray, tilt_ref_deg: float) -> np.ndarray:
     azimuth = (np.arctan2(normals[..., 1], normals[..., 0]) + np.pi) / (2.0 * np.pi)
     tilt = np.degrees(np.arccos(np.clip(normals[..., 2], -1.0, 1.0)))
@@ -523,6 +693,14 @@ def save_rgb(path: Path, rgb: np.ndarray, title: str, dpi: int, mask: np.ndarray
     ax.axis("off")
     fig.savefig(path)
     plt.close(fig)
+
+
+def save_rgb_exact(path: Path, rgb: np.ndarray, mask: np.ndarray | None = None) -> None:
+    image = np.clip(rgb, 0.0, 1.0).copy()
+    if mask is not None:
+        image[~mask] = 0.0
+    bgr = cv2.cvtColor(np.round(image * 255.0).astype(np.uint8), cv2.COLOR_RGB2BGR)
+    cv2.imwrite(str(path), bgr)
 
 
 def composite_over_gray(gray: np.ndarray, rgba: np.ndarray) -> np.ndarray:
@@ -858,10 +1036,7 @@ def main() -> None:
         ipf_on_sem = np.rot90(ipf_on_sem, 2)
     ipf_on_afm = sample_linear(ipf_grid, mapping["ebsd_row_float"], mapping["ebsd_col_float"], mapping["inside"])
 
-    valid = ebsd_on_afm["valid"] & (ebsd_on_afm["phase"] > 0)
-    selected_x, selected_y = select_point(config, valid, ebsd_on_afm["ci"], ebsd_on_afm["iq"])
-    marker_afm = (selected_x, selected_y)
-    marker_sem = (float(mapping["sem_display_x"][selected_y, selected_x]), float(mapping["sem_display_y"][selected_y, selected_x]))
+    base_valid = ebsd_on_afm["valid"] & (ebsd_on_afm["phase"] > 0)
 
     rotation = homography_center_rotation(h_afm_resized_to_sem, (sem_display.shape[1] / 2.0, sem_display.shape[0] / 2.0))
     normal_cfg = config.get("surface_index", {})
@@ -874,8 +1049,23 @@ def main() -> None:
         rotation,
         config["afm"].get("line_median_correction"),
     )
-    g = ebsd_on_afm["orientation"].astype(np.float32)
     normals_sample = normals["normals_sample"].astype(np.float32)
+    height_for_display = normals["height_line_corrected_um"].astype(np.float32)
+    afm_grain_cfg = config.get("afm_grain_orientation", {})
+    afm_grain_labels, afm_grain_boundary, afm_boundary_response, afm_grain_meta = extract_afm_grain_labels(
+        height_for_display,
+        base_valid,
+        afm_grain_cfg.get("segmentation"),
+    )
+    g, phase_grain_regularized, valid, grain_orientation_rows = regularize_orientation_by_afm_grains(
+        ebsd_on_afm,
+        base_valid,
+        afm_grain_labels,
+        afm_grain_cfg,
+    )
+    selected_x, selected_y = select_point(config, valid, ebsd_on_afm["ci"], ebsd_on_afm["iq"])
+    marker_afm = (selected_x, selected_y)
+    marker_sem = (float(mapping["sem_display_x"][selected_y, selected_x]), float(mapping["sem_display_y"][selected_y, selected_x]))
     n_crystal = np.einsum("...ij,...j->...i", g, normals_sample).astype(np.float32)
     n_crystal /= np.linalg.norm(n_crystal, axis=2, keepdims=True) + 1e-12
     n_crystal[~valid] = 0.0
@@ -891,8 +1081,10 @@ def main() -> None:
     best_hkl, angle_hkl = nearest_hkl(folded)
     angle_hkl[~valid] = np.nan
     normal_rgb = normal_direction_rgb(normals_sample, float(normal_cfg.get("normal_tilt_ref_deg", 16.0)))
-    height_for_display = normals["height_line_corrected_um"].astype(np.float32)
     height_rgb = plt.get_cmap("copper")(robust_rescale(height_for_display))[..., :3].astype(np.float32)
+    afm_grain_rgb = label_to_rgb(afm_grain_labels)
+    ipf_z_grain_rgb = facet_type_rgb(fold_cubic(ipf_z_crystal))
+    ipf_z_grain_rgb[~valid] = 0.0
 
     # Stage 1: AFM/SEM/EBSD spatial checks.
     save_rgb(fig_dir / "00_afm_raw_height_reference.png", plt.get_cmap("copper")(robust_rescale(afm_height))[..., :3].astype(np.float32), "Raw AFM height reference grid", dpi, marker=marker_afm)
@@ -904,6 +1096,12 @@ def main() -> None:
     software_ipf = read_optional_rgb(config["sem_ebsd"].get("software_ipf_reference_path"), sem_display.shape)
     save_sem_ebsd_correspondence(fig_dir / "04_sem_ebsd_correspondence_check.png", sem_display, ipf_on_sem, software_ipf, dpi)
     save_rgb(fig_dir / "05_ebsd_ipf_z_aligned_to_afm_reference.png", ipf_on_afm, "EBSD IPF-Z mapped to AFM reference", dpi, valid, marker_afm)
+    save_rgb(fig_dir / "05b_afm_grain_labels_reference.png", afm_grain_rgb, "AFM grain labels used as high-resolution orientation boundaries", dpi, base_valid, marker_afm)
+    save_scalar(fig_dir / "05c_afm_grain_boundary_response.png", afm_boundary_response, "AFM grain boundary response after line destriping", "magma", "response", dpi)
+    save_rgb(fig_dir / "05d_ebsd_ipf_z_afm_grain_regularized.png", ipf_z_grain_rgb, "EBSD orientation regularized by AFM grain boundaries", dpi, valid, marker_afm)
+    boundary_rgb = np.zeros_like(height_rgb)
+    boundary_rgb[..., 0] = 1.0
+    save_overlay(fig_dir / "05e_afm_grain_boundaries_over_height.png", height_for_display, boundary_rgb, afm_grain_boundary, 0.92, "AFM grain boundaries over line-destriped height", marker_afm, dpi)
     save_scalar(fig_dir / "06_ebsd_iq_aligned_to_afm_reference.png", ebsd_on_afm["iq"], "EBSD IQ mapped to AFM reference", "gray", "IQ", dpi)
     save_scalar(fig_dir / "07_ebsd_ci_aligned_to_afm_reference.png", ebsd_on_afm["ci"], "EBSD CI mapped to AFM reference", "viridis", "CI", dpi)
 
@@ -911,6 +1109,7 @@ def main() -> None:
     save_rgb(fig_dir / "08_afm_sample_normal_reference.png", normal_rgb, "AFM sample-normal map on AFM reference", dpi, marker=marker_afm)
     save_scalar(fig_dir / "09_afm_slope_deg_reference.png", normals["slope_deg"], "AFM local slope", "magma", "deg", dpi)
     save_rgb(fig_dir / "10_surface_index_afm_reference.png", surface_rgb, "AFM surface normal in EBSD crystal frame", dpi, valid, marker_afm)
+    save_rgb_exact(fig_dir / "10_surface_index_afm_reference_exact_1024px.png", surface_rgb, valid)
     save_overlay(fig_dir / "11_surface_index_over_afm_height_reference.png", height_for_display, surface_rgb, valid, float(config["visualization"].get("surface_overlay_alpha", 0.82)), "Surface index over line-corrected AFM height reference", marker_afm, dpi)
     save_scalar(fig_dir / "12_nearest_hkl_angle_deg_reference.png", angle_hkl, "Angle to nearest low-index cubic plane", "magma", "deg", dpi)
     save_scalar(fig_dir / "13_surface_normal_vs_ipf_z_angle_deg.png", surface_vs_ipfz_angle, "AFM surface normal vs conventional IPF-Z direction", "viridis", "deg", dpi)
@@ -938,6 +1137,7 @@ def main() -> None:
 
     threshold = float(normal_cfg.get("hkl_angle_threshold_deg", 10.0))
     write_hkl_summary(data_dir / "nearest_hkl_summary.csv", best_hkl, angle_hkl, valid, threshold)
+    write_rows_csv(data_dir / "afm_grain_orientation_sources.csv", grain_orientation_rows)
     np.savez_compressed(
         data_dir / "afm_reference_ebsd_mapping_and_surface_index.npz",
         afm_height_um=afm_height.astype(np.float32),
@@ -952,10 +1152,16 @@ def main() -> None:
         ebsd_col=mapping["ebsd_col"],
         ebsd_index=ebsd_on_afm["ebsd_index"],
         phase=ebsd_on_afm["phase"],
+        phase_afm_grain_regularized=phase_grain_regularized,
         valid=valid,
+        base_valid=base_valid,
         iq=ebsd_on_afm["iq"],
         ci=ebsd_on_afm["ci"],
         fit=ebsd_on_afm["fit"],
+        afm_grain_labels=afm_grain_labels,
+        afm_grain_boundary=afm_grain_boundary,
+        afm_grain_boundary_response=afm_boundary_response,
+        orientation_afm_grain_regularized=g,
         normals_sample=normals_sample,
         normals_crystal=n_crystal,
         folded_cubic_direction=folded,
@@ -968,7 +1174,7 @@ def main() -> None:
 
     metadata = {
         "status": "completed",
-        "method": "Standard AFM->SEM->EBSD pipeline: use existing AFM-SEM alignment, then use SEM-display to EBSD-grid correspondence before surface-index calculation.",
+        "method": "Standard AFM->SEM->EBSD pipeline: use existing AFM-SEM alignment, map EBSD to AFM reference, then use AFM grain boundaries to regularize EBSD orientation before surface-index calculation.",
         "afm": afm_meta,
         "sem_ebsd": {
             "h5_path": ebsd["h5_path"],
@@ -996,6 +1202,13 @@ def main() -> None:
             "line_correction": normals["line_correction"],
             "normal_smooth_sigma_px": float(config["afm"].get("normal_smooth_sigma_px", 1.0)),
         },
+        "afm_grain_orientation": {
+            "segmentation": afm_grain_meta,
+            "method": afm_grain_cfg.get("method", "highest_ci_iq"),
+            "orientation_core_erode_px": int(afm_grain_cfg.get("orientation_core_erode_px", 8)),
+            "grain_orientation_sources_csv": str((data_dir / "afm_grain_orientation_sources.csv").resolve()),
+            "note": "AFM grain labels provide the high-resolution spatial boundary; EBSD still provides the representative orientation for each AFM grain.",
+        },
         "selected_point": {
             "afm_x_px": selected_x,
             "afm_y_px": selected_y,
@@ -1007,7 +1220,9 @@ def main() -> None:
             "IQ": float(ebsd_on_afm["iq"][selected_y, selected_x]),
             "CI": float(ebsd_on_afm["ci"][selected_y, selected_x]),
             "Fit": float(ebsd_on_afm["fit"][selected_y, selected_x]),
-            "phase": int(ebsd_on_afm["phase"][selected_y, selected_x]),
+            "phase_raw_ebsd": int(ebsd_on_afm["phase"][selected_y, selected_x]),
+            "phase_afm_grain_regularized": int(phase_grain_regularized[selected_y, selected_x]),
+            "afm_grain_id": int(afm_grain_labels[selected_y, selected_x]),
             "n_sample": normals_sample[selected_y, selected_x].astype(float).tolist(),
             "n_crystal": n_crystal[selected_y, selected_x].astype(float).tolist(),
             "folded_cubic_direction": folded[selected_y, selected_x].astype(float).tolist(),
@@ -1022,6 +1237,7 @@ def main() -> None:
             "data_npz": str((data_dir / "afm_reference_ebsd_mapping_and_surface_index.npz").resolve()),
             "metadata": str((data_dir / "standard_pipeline_metadata.json").resolve()),
             "hkl_summary": str((data_dir / "nearest_hkl_summary.csv").resolve()),
+            "afm_grain_orientation_sources": str((data_dir / "afm_grain_orientation_sources.csv").resolve()),
         },
         "software": {
             "python": platform.python_version(),
