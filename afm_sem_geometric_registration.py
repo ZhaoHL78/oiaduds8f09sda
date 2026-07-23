@@ -12,11 +12,10 @@ import cv2
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
+from igor2.binarywave import load as load_ibw
+from matplotlib.colors import hsv_to_rgb
 from scipy import ndimage, optimize
 from skimage import exposure, filters, morphology, transform
-
-from align_pt_afm_sem_ipf import read_afm_channels, robust_rescale
-from afm_ebsd_surface_index import height_to_normals, normal_direction_rgb, save_normalmap_with_legend
 
 
 @dataclass
@@ -50,6 +49,181 @@ class ModelResult:
     residuals_px: np.ndarray
     train_metrics: dict[str, float]
     holdout_metrics: dict[str, float] | None
+
+
+def parse_note(note: bytes | str) -> dict[str, str]:
+    text = note.decode("utf-8", "ignore") if isinstance(note, bytes) else str(note)
+    output: dict[str, str] = {}
+    for raw_line in text.replace("\r", "\n").splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        output[key.strip()] = value.strip()
+    return output
+
+
+def read_afm_channels(path: Path) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    payload = load_ibw(str(path))["wave"]
+    data = np.asarray(payload["wData"], dtype=np.float32)
+    if data.ndim == 2:
+        data = data[:, :, None]
+
+    labels_raw = payload.get("labels", [[], [], [], []])
+    channel_labels = labels_raw[2] if len(labels_raw) > 2 else []
+    labels: list[str] = []
+    for raw in channel_labels:
+        label = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
+        label = label.strip("\x00").strip()
+        if label:
+            labels.append(label)
+    if len(labels) < data.shape[2]:
+        labels.extend(f"channel_{index}" for index in range(len(labels), data.shape[2]))
+
+    channels = {label: data[:, :, index] for index, label in enumerate(labels[: data.shape[2]])}
+    note = parse_note(payload.get("note", b""))
+    scan_size_um = float(note.get("ScanSize", "nan")) * 1e6 if "ScanSize" in note else float("nan")
+    metadata = {
+        "shape": list(data.shape[:2]),
+        "channel_labels": labels[: data.shape[2]],
+        "scan_size_um": scan_size_um,
+        "scan_angle_deg": float(note.get("ScanAngle", "nan")) if "ScanAngle" in note else float("nan"),
+        "imaging_mode": note.get("ImagingMode", ""),
+        "points_lines": note.get("PointsLines", ""),
+    }
+    return channels, metadata
+
+
+def robust_rescale(image: np.ndarray, low: float = 0.5, high: float = 99.5) -> np.ndarray:
+    image = np.asarray(image, dtype=np.float32)
+    values = image[np.isfinite(image)]
+    if values.size == 0:
+        return np.zeros_like(image, dtype=np.float32)
+    lo, hi = np.percentile(values, [low, high])
+    if hi <= lo:
+        lo, hi = float(values.min()), float(values.max())
+    return np.clip((image - lo) / max(hi - lo, 1e-6), 0.0, 1.0).astype(np.float32)
+
+
+def plane_level(height_um: np.ndarray) -> np.ndarray:
+    y, x = np.indices(height_um.shape, dtype=np.float64)
+    values = height_um.astype(np.float64)
+    finite = np.isfinite(values)
+    design = np.column_stack([x[finite], y[finite], np.ones(np.count_nonzero(finite))])
+    coeff, *_ = np.linalg.lstsq(design, values[finite], rcond=None)
+    plane = coeff[0] * x + coeff[1] * y + coeff[2]
+    return (values - plane).astype(np.float32)
+
+
+def affine_rotation_2d(affine_afm_to_sem: np.ndarray) -> np.ndarray:
+    linear = affine_afm_to_sem[:2, :2].astype(np.float64)
+    u, _s, vt = np.linalg.svd(linear)
+    rotation = u @ vt
+    if np.linalg.det(rotation) < 0:
+        u[:, -1] *= -1.0
+        rotation = u @ vt
+    return rotation.astype(np.float32)
+
+
+def height_to_normals(
+    height_um: np.ndarray,
+    scan_size_um: float,
+    affine_afm_to_sem: np.ndarray,
+    smooth_sigma_px: float,
+    level: bool,
+) -> dict[str, np.ndarray | float]:
+    height = plane_level(height_um) if level else height_um.astype(np.float32)
+    smooth = ndimage.gaussian_filter(height.astype(np.float32), sigma=smooth_sigma_px) if smooth_sigma_px > 0 else height
+
+    pitch_x_um = scan_size_um / max(height.shape[1] - 1, 1)
+    pitch_y_um = scan_size_um / max(height.shape[0] - 1, 1)
+    scharr_col = cv2.Scharr(smooth.astype(np.float32), cv2.CV_32F, 1, 0, scale=1.0 / 32.0)
+    scharr_row = cv2.Scharr(smooth.astype(np.float32), cv2.CV_32F, 0, 1, scale=1.0 / 32.0)
+    dz_dcol_um = scharr_col / max(pitch_x_um, 1e-12)
+    dz_drow_um = scharr_row / max(pitch_y_um, 1e-12)
+
+    normals_afm = np.dstack(
+        [
+            -dz_dcol_um.astype(np.float32),
+            -dz_drow_um.astype(np.float32),
+            np.ones_like(smooth, dtype=np.float32),
+        ]
+    )
+    normals_afm /= np.linalg.norm(normals_afm, axis=2, keepdims=True) + 1e-12
+
+    rotation = affine_rotation_2d(affine_afm_to_sem)
+    normals_xy = normals_afm[..., :2].reshape(-1, 2) @ rotation.T
+    normals = np.column_stack([normals_xy, normals_afm[..., 2].reshape(-1)]).reshape(normals_afm.shape)
+    normals /= np.linalg.norm(normals, axis=2, keepdims=True) + 1e-12
+    normals[normals[..., 2] < 0] *= -1.0
+
+    tilt_deg = np.degrees(np.arccos(np.clip(normals[..., 2], -1.0, 1.0))).astype(np.float32)
+    azimuth_deg = np.degrees(np.arctan2(normals[..., 1], normals[..., 0])).astype(np.float32)
+    return {
+        "height_um": height.astype(np.float32),
+        "height_smooth_um": smooth.astype(np.float32),
+        "normals_afm": normals_afm.astype(np.float32),
+        "normals_sample": normals.astype(np.float32),
+        "scharr_dz_dcol": dz_dcol_um.astype(np.float32),
+        "scharr_dz_drow": dz_drow_um.astype(np.float32),
+        "tilt_deg": tilt_deg,
+        "azimuth_deg": azimuth_deg,
+        "pitch_x_um": float(pitch_x_um),
+        "pitch_y_um": float(pitch_y_um),
+        "afm_to_sem_rotation_2d": rotation,
+    }
+
+
+def normal_direction_rgb(normals: np.ndarray, tilt_ref_deg: float) -> np.ndarray:
+    azimuth = (np.arctan2(normals[..., 1], normals[..., 0]) + np.pi) / (2.0 * np.pi)
+    tilt = np.degrees(np.arccos(np.clip(normals[..., 2], -1.0, 1.0)))
+    saturation = np.clip(tilt / max(tilt_ref_deg, 1e-6), 0.0, 1.0)
+    value = np.ones_like(saturation) * 0.96
+    return hsv_to_rgb(np.dstack([azimuth, saturation, value])).astype(np.float32)
+
+
+def normal_legend_rgb(size: int = 320) -> np.ndarray:
+    yy, xx = np.mgrid[-1.0:1.0:complex(size), -1.0:1.0:complex(size)]
+    radius = np.sqrt(xx**2 + yy**2)
+    hue = (np.arctan2(yy, xx) + np.pi) / (2.0 * np.pi)
+    saturation = np.clip(radius, 0.0, 1.0)
+    rgb = hsv_to_rgb(np.dstack([hue, saturation, np.full_like(hue, 0.96)])).astype(np.float32)
+    rgba_image = np.zeros((size, size, 4), dtype=np.float32)
+    rgba_image[..., :3] = rgb
+    rgba_image[..., 3] = (radius <= 1.0).astype(np.float32)
+    return rgba_image
+
+
+def save_normalmap_with_legend(path: Path, normal_rgb: np.ndarray, title: str, tilt_ref_deg: float) -> None:
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(10.5, 5.8),
+        dpi=220,
+        gridspec_kw={"width_ratios": [3.2, 1.0]},
+        constrained_layout=True,
+    )
+    axes[0].imshow(normal_rgb)
+    axes[0].set_title(title)
+    axes[0].axis("off")
+    axes[1].imshow(normal_legend_rgb(), extent=(-1, 1, -1, 1))
+    axes[1].set_title("Normal color key")
+    axes[1].set_aspect("equal")
+    axes[1].axis("off")
+    axes[1].text(0.94, 0.50, "0 deg", transform=axes[1].transAxes, ha="right", va="center", fontsize=8)
+    axes[1].text(0.06, 0.50, "180 deg", transform=axes[1].transAxes, ha="left", va="center", fontsize=8)
+    axes[1].text(0.50, 0.94, "+90 deg", transform=axes[1].transAxes, ha="center", va="top", fontsize=8)
+    axes[1].text(0.50, 0.06, "-90 deg", transform=axes[1].transAxes, ha="center", va="bottom", fontsize=8)
+    axes[1].text(
+        0.50,
+        -0.16,
+        f"hue=azimuth, center=0 deg tilt, rim={tilt_ref_deg:g} deg",
+        transform=axes[1].transAxes,
+        ha="center",
+        va="top",
+        fontsize=8,
+    )
+    fig.savefig(path, bbox_inches="tight", transparent=True)
+    plt.close(fig)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -534,10 +708,10 @@ def affine_refine_distance(initial: ModelResult, afm_feat: FeatureSet, sem_feat:
             inv = cv2.invertAffineTransform(m)
             aw = transform_points(m, afm_pts, "affine")
             sw = transform_points(inv, sem_pts, "affine")
-            valid_a = (aw[:, 0] >= 0) & (aw[:, 0] < sem_dt.shape[1] - 1) & (aw[:, 1] >= 0) & (aw[:, 1] < sem_dt.shape[0] - 1)
-            valid_s = (sw[:, 0] >= 0) & (sw[:, 0] < afm_dt.shape[1] - 1) & (sw[:, 1] >= 0) & (sw[:, 1] < afm_dt.shape[0] - 1)
-            da = ndimage.map_coordinates(sem_dt, [aw[valid_a, 1], aw[valid_a, 0]], order=1, mode="constant", cval=max(sem_dt.shape))
-            ds = ndimage.map_coordinates(afm_dt, [sw[valid_s, 1], sw[valid_s, 0]], order=1, mode="constant", cval=max(afm_dt.shape))
+            # Keep a fixed residual length for least_squares. Points outside the
+            # image receive a large constant penalty instead of being dropped.
+            da = ndimage.map_coordinates(sem_dt, [aw[:, 1], aw[:, 0]], order=1, mode="constant", cval=max(sem_dt.shape))
+            ds = ndimage.map_coordinates(afm_dt, [sw[:, 1], sw[:, 0]], order=1, mode="constant", cval=max(afm_dt.shape))
             return np.concatenate([da, ds]).astype(np.float64)
 
         before = residual_vector(matrix_scaled.reshape(-1))
@@ -739,12 +913,41 @@ def run_pipeline(config_path: Path, pick_points: bool = False, prepare_only: boo
     models = fit_models(afm_points, sem_points, config, output_dir)
     chosen = choose_model(models, config)
     refined = chosen
+    pixel_size_um = pixel_size_um_from_afm(data)
+    chosen_all_metrics = residual_metrics(chosen.residuals_px, pixel_size_um)
+    distance_refinement_note = {
+        "attempted": False,
+        "accepted": False,
+        "reason": "Distance-field refinement disabled by config.",
+        "initial_control_point_metrics": chosen_all_metrics,
+    }
     if config.get("distance_refinement", {}).get("enabled", True):
-        refined = affine_refine_distance(chosen, afm_features, sem_features, config, output_dir)
-        refined.name = "refined_affine"
-        refined.residuals_px = np.linalg.norm(transform_points(refined.matrix, afm_points, "refined_affine") - sem_points, axis=1)
-        refined.train_metrics = residual_metrics(refined.residuals_px, pixel_size_um_from_afm(data))
-        refined.holdout_metrics = None
+        candidate = affine_refine_distance(chosen, afm_features, sem_features, config, output_dir)
+        candidate.name = "refined_affine"
+        candidate.residuals_px = np.linalg.norm(transform_points(candidate.matrix, afm_points, "refined_affine") - sem_points, axis=1)
+        candidate.train_metrics = residual_metrics(candidate.residuals_px, pixel_size_um)
+        candidate.holdout_metrics = None
+        max_median = float(config["model_selection"]["max_acceptable_median_error_px"])
+        cp_guard = (
+            candidate.train_metrics["rmse_px"] <= max(chosen_all_metrics["rmse_px"] * 1.35, chosen_all_metrics["rmse_px"] + 2.0)
+            and candidate.train_metrics["median_px"] <= max(chosen_all_metrics["median_px"] * 1.35, chosen_all_metrics["median_px"] + 2.0)
+            and candidate.train_metrics["median_px"] <= max_median
+        )
+        distance_refinement_note = {
+            "attempted": True,
+            "accepted": bool(cp_guard),
+            "reason": "Accepted because control-point residuals stayed within guard limits."
+            if cp_guard
+            else "Rejected because boundary-distance refinement degraded manually validated control-point residuals; automatic masks contain non-corresponding edges.",
+            "initial_control_point_metrics": chosen_all_metrics,
+            "candidate_control_point_metrics": candidate.train_metrics,
+        }
+        if cp_guard:
+            refined = candidate
+        else:
+            refined = chosen
+            refined.train_metrics = chosen_all_metrics
+            refined.holdout_metrics = None
 
     afm_warped, common_mask = warp_image(data.afm_display_gray, refined.matrix, refined.name, data.sem_display.shape)
     afm_skel_warped, _ = warp_image(afm_features.skeleton.astype(np.float32), refined.matrix, refined.name, data.sem_display.shape, cv2.INTER_NEAREST)
@@ -805,6 +1008,7 @@ def run_pipeline(config_path: Path, pick_points: bool = False, prepare_only: boo
         "jacobian": nonrigid_note,
         "pixel_size_um_note": "Micron errors use AFM scan size divided by display width/height as an approximate same-FOV scale. If this calibration is wrong, use pixel errors and update config.",
         "nonrigid": nonrigid_note,
+        "distance_refinement": distance_refinement_note,
     }
     write_json(output_dir / "registration_report.json", report)
     return report

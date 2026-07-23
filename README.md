@@ -477,7 +477,9 @@
   - IPF reference: `E:\ZHL\20251209Pt-EBSD MAP\pt-high resolution\60.bmp`
 - 坐标约定：
   - AFM `.ibw` 读出的 `HeightRetrace` 保留浮点高度值，默认先 `rot90` 到 AFM 软件显示方向。
-  - AFM/SEM 配准目标使用 H5 SEM raw row order，不做 `flipud`；只有进入 EDAX IPF frame 时，才对 SEM/AFM/IPF 结果一起进入 `flipud` 后的显示帧。
+  - AFM/SEM 配准目标使用 H5 SEM 的 `flipud` 显示帧；用户已确认 raw row order 与 AFM 上下相反。
+  - 若控制点最初在 raw SEM 上点选，必须同步做 `sem_y_new = H - 1 - sem_y_old`，否则矩阵方向会被污染。
+  - EDAX IPF frame 与当前 flipped SEM frame 已同向，配置中 `sem_to_ipf_orientation` 保持 `raw`。
   - 所有矩阵默认表示 `AFM_display pixel -> SEM_display pixel`，同时输出逆矩阵。
 - 流程：
   - 读取数据、动态范围和元数据，保存方向候选图。
@@ -488,7 +490,8 @@
   - 在控制点初始化后，用双向晶界距离场和 Huber 鲁棒损失做多分辨率精修。
   - 默认不启用非刚性配准；只有全局模型残差呈明确空间系统性时，才允许单独尝试强正则化的非刚性模型。
   - 最终把 AFM 浮点高度场重采样到 SEM frame，再在统一坐标系下重新计算 Scharr normalmap，而不是 warp 旧 RGB normalmap。
-- 已运行准备阶段，当前输出在 `outputs/afm_sem_geometric_registration_pt_highres60/`。自动晶界提取可以作为精修约束，但不够可靠到自动生成最终矩阵，因此程序会在缺少人工控制点时停止，并明确返回 `needs_control_points`，避免输出假的配准结果。
+- 当前输出在 `outputs/afm_sem_geometric_registration_pt_highres60/`。自动晶界提取可以作为精修约束，但不够可靠到自动生成最终矩阵，因此程序会在缺少人工控制点时停止，并明确返回 `needs_control_points`。
+- 当前 8 对人工控制点运行结果选择 `affine` 作为最终模型：控制点 RMSE `1.94 px`，median `0.71 px`，max `4.88 px`。距离场精修曾尝试但被自动拒绝，因为自动 mask 中的非对应边界会把控制点 RMSE 拉到 `41.14 px`。
 
 ### 18. AFM 法向量与 EBSD 表面晶面指数图
 
@@ -784,8 +787,12 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 - 新增 `align_pt_highres60_afm.py`，把 `Pt-2high resolution.ibw` 配准到 Pt high-resolution 60° EBSD 的 H5 SEM/IPF frame，并单独输出 AFM height、amplitude、Scharr normalmap、normalmap color key、LightGlue matches、候选 overlay 预览和 AFM->EBSD60 overlay。
 - 修正 Pt high-resolution 60° AFM/SEM/IPF 对齐：旧版误用 SEM/IPF scale bar 和 EBSD 物理宽度，把 AFM 缩成小块。新版 `align_pt_highres60_afm_same_fov.py` 使用 AFM/SEM 同视场先验，先把 AFM `rot90` 到软件显示方向，再与 H5 SEM raw row order 做中心旋转约 10° 的同视场仿射；只有进入 EDAX IPF frame 时才 `flipud`。
 - 新增 `afm_sem_geometric_registration.py` 和 `configs/afm_sem_pt_highres60.json`，把 Pt high-resolution 60° AFM-SEM 配准改成几何结构驱动流程：AFM 高度/梯度与 SEM 背景校正边缘分别提取晶界，人工控制点初始化 similarity/affine/homography，RANSAC 选低自由度模型，再用双向晶界距离场做多分辨率鲁棒精修。
-- 新流程默认使用 `AFM rot90` 与 `SEM raw row order`；不再把 H5 SEM 上下翻转后用于 AFM 配准，也不使用错误 scale bar 推导视场大小。EDAX IPF frame 的 `flipud` 只在后续 IPF/EBSD 叠加时单独应用。
+- 新流程默认使用 `AFM rot90` 与 `SEM flipud`；不再使用 H5 SEM raw row order 做 AFM 配准，也不使用错误 scale bar 推导视场大小。当前 flipped SEM frame 与 EDAX IPF reference 同向。
 - 已运行 `--prepare-only` 生成数据检查、方向候选、AFM/SEM 梯度、晶界 mask、骨架和距离场；当前缺少人工确认控制点时程序返回 `needs_control_points`，不输出虚假的最终变换矩阵。
+- 根据人工检查修正 Pt high-resolution 60° AFM-SEM 对齐 frame：正式流程改为 `AFM rot90` + `SEM flipud`。已把前 4 对 raw-SEM 控制点按 `y_new=H-1-y_old` 同步翻转，并用 8 对控制点跑通。
+- 当前最终模型选择 affine：`AFM_display -> SEM_display` 矩阵为 `[[0.560985, 0.226098, 79.086979], [-0.143574, 0.910537, 40.717195]]`，控制点 RMSE `1.94 px`、median `0.71 px`、max `4.88 px`。
+- 距离场精修已执行但被自动拒绝：自动 AFM/SEM 晶界 mask 混有非对应边界，精修候选会把控制点 RMSE 从 `1.94 px` 拉高到 `41.14 px`。新脚本加入 control-point guard，今后不会让不可靠的距离场精修覆盖人工控制点模型。
+- 移除 `afm_sem_geometric_registration.py` 对旧 LightGlue/torch 脚本的 import，避免 Windows OpenMP runtime 冲突；新脚本只依赖 `numpy/scipy/opencv/scikit-image/matplotlib/h5py/igor2`。
 
 ### 2026-07-21
 

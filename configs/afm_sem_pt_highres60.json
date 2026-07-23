@@ -10,12 +10,12 @@
     "source": "edax_h5",
     "h5_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217.edaxh5",
     "h5_group": "20251217/Pt foil-high resolution/Area 8-60/OIM Map 1",
-    "display_orientation": "raw",
-    "note": "Use raw H5 SEM for AFM alignment. Only flip SEM together with results when converting to EDAX IPF frame."
+    "display_orientation": "flipud",
+    "note": "Use vertically flipped H5 SEM for AFM alignment; user-confirmed this is the correct AFM/SEM correspondence frame."
   },
   "ipf_reference": {
     "path": "E:/ZHL/20251209Pt-EBSD MAP/pt-high resolution/60.bmp",
-    "sem_to_ipf_orientation": "flipud"
+    "sem_to_ipf_orientation": "raw"
   },
   "output_dir": "outputs/afm_sem_geometric_registration_pt_highres60",
   "control_points": {
