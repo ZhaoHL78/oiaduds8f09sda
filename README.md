@@ -797,6 +797,22 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 - 右上角继续补点后，14 对控制点使正式模型从 affine 切换为 homography。修正脚本逻辑：当全局模型为 homography 时，不再调用 affine-only distance refinement，避免 3x3 homography 被误当成 2x3 affine。
 - 当前正式 14 点 homography 矩阵为 `[[0.577732, 0.262868, 79.412139], [-0.161358, 0.942799, 48.373020], [-0.000033, 0.000283, 1.0]]`；另输出 `candidate_all_point_homography_14pts/` 作为全部控制点拟合候选，对照右上/左下 residual。
 
+### 10.5 AFM-reference EBSD surface-normal index fusion
+
+- 新增模块化流程 `afm_ebsd_surface_index_pipeline.py` 和 `afm_ebsd_fusion/`，目标是把 EBSD phase/orientation 映射到 AFM 原始高度网格，并用 AFM 逐像素 surface normal 计算 crystal-frame surface-normal direction。
+- 默认测试配置为 `configs/afm_ebsd_surface_index_pt_highres60.json`，输入为 Pt high-resolution 60° 的 AFM `Pt-2high resolution.ibw`、EDAX H5 `Area 8-60/OIM Map 1` 和刚刚人工控制点得到的 AFM->SEM homography。
+- 坐标和 orientation 约定被显式写入配置与报告：AFM raw height 先 `rot90` 成显示方向；SEM 使用 H5 `SEM-PRIAS Images/DATA/SEM` 的 `flipud` display frame；配准矩阵方向为 `AFM_display_resized -> SEM_display`；EDAX `Orientations` 确认为 `crystal_direction = G_sample_to_crystal @ sample_direction`。
+- 程序先复现 EDAX 软件 IPF-Z 作为 orientation convention 验证。当前 Pt high-resolution 60° 测试中，H5 IPF-Z 的最佳方向为 `raw`，与软件导出 `60.bmp` 的 mean_abs_rgb 为 `0.0355`，明显优于 `flipud/fliplr/rot180/transpose`。
+- AFM 法向默认用全局 plane leveling 后的 smoothed height 做局部平面拟合，Scharr/Gaussian derivative 作为不确定度对照。输出 `normal_sample`、`normal_crystal`、surface-normal IPF、nearest `{hkl}`、angle-to-{hkl}、quality masks、grain statistics 和逐像素 HDF5。
+- 注意：该 H5 group 没有 EDAX vendor grain ID 数据集。流程会从 phase + 低敏感量化 IPF connected components 派生保守 grain ID；这只用于防止跨边界平均，不等价于 OIM 原始 grain ID。
+- 运行方式：
+
+```bash
+python afm_ebsd_surface_index_pipeline.py --config configs/afm_ebsd_surface_index_pt_highres60.json
+```
+
+- 当前本机测试输出位于 `outputs/afm_ebsd_surface_index_pt_highres60/`，核心验证结果：round-trip median `0 deg`，平坦区域 surface-normal vs conventional IPF-Z median `0.49 deg`，有效 AFM+EBSD 像素比例 `0.981`。输出目录被 `.gitignore` 排除，不上传原始数据或生成图。
+
 ### 2026-07-21
 
 - 新增 `afm_ebsd_surface_index.py`，将 Pt AFM 高度场转换为 sample-frame surface normal，并结合 Pt-3 90° EBSD orientation 得到 crystal-frame surface-index / `{hkl}` 数据。
