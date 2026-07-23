@@ -540,43 +540,42 @@
   - `nearest_hkl_counts.csv`
   - `afm_ebsd_surface_index_metadata.json`
 
-### 18.1 Pt high-resolution 60° aligned AFM-reference surface index
+### 18.1 标准 AFM -> SEM -> EBSD -> surface-index 流程
 
-- `afm_ebsd_aligned_surface_index.py` 是当前推荐的 Pt high-resolution 60° AFM/EBSD surface-index 可视化入口。
-- 这个脚本只使用已经确认的 AFM->SEM/IPF homography 结果，不重新做 AFM/SEM 配准，也不使用 IPF 彩图反推 orientation。
-- 当前固定输入：
+- `afm_sem_ebsd_standard_pipeline.py` 是当前推荐的标准流程入口，用来把已经确认的 AFM-SEM align 结果、H5 SEM-EBSD 固定对应关系和 AFM 高度场晶体学计算串成一个可复用流程。
+- 流程顺序必须保持为：
+  1. AFM `HeightRetrace` 读入并按 AFM 软件显示方向 `rot90`，保留 `1024 x 1024` AFM 原始显示网格作为最终 reference。
+  2. 读取已确认的 AFM-SEM 配准报告 `registration_report.json`，其中矩阵定义为 `AFM_display resize 到 SEM_display 尺寸后 -> SEM_display`。
+  3. 读取同一个 EDAX H5 group 中的 `SEM-PRIAS Images/DATA/SEM`、EBSD orientation、IQ、CI、phase、valid 等原始 mapping。
+  4. 先确认 `SEM display -> EBSD grid` 的方向；Pt high-resolution 60° 当前使用 `SEM flipud display`，并且该 frame 与 H5/EDAX IPF-Z grid 同向，所以 `sem_display_to_ebsd_grid=raw`，不再把 SEM display 又翻回 raw SEM。
+  5. 构造完整矩阵 `T_afm_reference_to_ebsd_grid = T_sem_display_to_ebsd_grid @ T_afm_resized_to_sem_display @ T_afm_reference_to_resized`。
+  6. 用 backward sampling 把 EBSD IPF-Z、IQ、CI、phase、valid 和 orientation 先映射到 AFM reference 网格。
+  7. 在 AFM reference 网格中计算 Scharr normalmap，再结合已经映射到 AFM 的 EBSD orientation 计算 `n_crystal = G @ n_sample`。
+  8. 输出连续 surface-normal crystal direction、nearest `{hkl}` 角度诊断和 3D surface-index 图。
+- 当前固定 test 配置：
+  - 配置：`configs\afm_sem_ebsd_standard_pipeline_pt_highres60.json`
   - AFM: `D:\EBSD project\3d数据\pt-afm\Pt-2high resolution.ibw`
   - EBSD H5: `E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217.edaxh5`
   - H5 group: `20251217/Pt foil-high resolution/Area 8-60/OIM Map 1`
   - UP2: `E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217_Pt foil-high resolution_Area 8_OIM Map 1.up2`
-  - align report: `outputs\afm_sem_geometric_registration_pt_highres60\registration_report.json`
-- 坐标定义：
-  - AFM `HeightRetrace` 先 `rot90` 到 AFM 软件显示方向，并保持 `1024 x 1024` 作为最终 reference grid。
-  - 使用 alignment report 中的 `AFM_display -> SEM_display` 3x3 homography，把每个 AFM 像素 backward sample 到 H5 SEM/IPF/EBSD grid。
-  - SEM display 使用用户确认的 `flipud` frame；输出 overlay 与 EDAX IPF-Z reference 同向。
-  - AFM 法向量在 AFM 物理坐标中由 Scharr 计算，再只使用 homography 的局部/整体平面旋转部分把法向表达进 EBSD display/sample 平面；homography 的 scale/shear 不参与高度梯度。
-  - EDAX H5 `Orientations` 已按软件 IPF-Z 验证，当前可视化采用 `n_crystal = G @ n_sample`。
-- 输出含义：
-  - `surface_index` 是连续的 crystal-frame surface-normal direction 颜色图，不等同于普通 EBSD IPF-Z。
-  - 最近 `{hkl}` 只作为辅助诊断，角度偏差较大时不应被当作严格 facet label。
-  - EBSD orientation 被映射到 AFM 网格只是空间耦合，不表示 EBSD 空间分辨率被提高。
-- 当前本机 test 已跑通，输出保存在 `outputs\afm_ebsd_aligned_surface_index_pt_highres60\`：
-  - `figures\01_sem_with_aligned_afm_height_overlay.png`
-  - `figures\02_sem_with_aligned_surface_index_overlay.png`
-  - `figures\03_afm_height_reference_selected.png`
-  - `figures\04_afm_normal_reference_selected.png`
-  - `figures\05_ebsd_ipf_z_mapped_to_afm_reference.png`
-  - `figures\06_surface_index_afm_reference_selected.png`
-  - `figures\07_surface_index_over_afm_height_reference.png`
-  - `figures\08_nearest_hkl_angle_reference.png`
-  - `figures\09_normal_azimuth_color_key.png`
-  - `figures\10_selected_kikuchi_ohp_bands.png`
-  - `figures\11_coupling_montage_like_reference.png`
-  - `figures\12_surface_index_3d.png`
-  - `figures\12_surface_index_3d_interactive.html`
-  - `data\aligned_surface_index_afm_reference_data.npz`
-  - `data\selected_point_and_surface_index_metadata.json`
+  - AFM-SEM align report: `outputs\afm_sem_geometric_registration_pt_highres60\registration_report.json`
+- 当前本机 test 已跑通，输出保存在 `outputs\afm_sem_ebsd_standard_pipeline_pt_highres60\`：
+  - `figures\03_afm_to_sem_alignment_check.png`
+  - `figures\04_sem_ebsd_correspondence_check.png`
+  - `figures\05_ebsd_ipf_z_aligned_to_afm_reference.png`
+  - `figures\06_ebsd_iq_aligned_to_afm_reference.png`
+  - `figures\07_ebsd_ci_aligned_to_afm_reference.png`
+  - `figures\08_afm_sample_normal_reference.png`
+  - `figures\10_surface_index_afm_reference.png`
+  - `figures\11_surface_index_over_afm_height_reference.png`
+  - `figures\14_selected_kikuchi_ohp_bands.png`
+  - `figures\15_standard_pipeline_montage.png`
+  - `figures\16_surface_index_3d.png`
+  - `figures\16_surface_index_3d_interactive.html`
+  - `data\afm_reference_ebsd_mapping_and_surface_index.npz`
+  - `data\standard_pipeline_metadata.json`
   - `data\nearest_hkl_summary.csv`
+- 这个流程的关键约束是：EBSD mapping 必须先被映射到 AFM reference，再做 AFM 法向和 crystal-frame surface index；不能跳过 `SEM display -> EBSD grid` 这层，也不能从 IPF 彩色图反推 orientation。
 
 主要代码：
 
@@ -592,7 +591,7 @@
 - `align_pt_highres60_afm.py`
 - `afm_sem_geometric_registration.py`
 - `afm_ebsd_surface_index.py`
-- `afm_ebsd_aligned_surface_index.py`
+- `afm_sem_ebsd_standard_pipeline.py`
 - `visualize_edax_projection_sets.py`
 - `visualize_edax_match_3d.py`
 - `visualize_scan_position_pc_correction.py`
@@ -820,9 +819,10 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 ### 2026-07-23
 
 - 删除上一版错误的“大而全”AFM-EBSD fusion 工程代码：`afm_ebsd_fusion/`、`afm_ebsd_surface_index_pipeline.py`、`configs/afm_ebsd_surface_index_pt_highres60.json` 和 `tests/test_afm_ebsd_fusion_math.py`。
-- 新增 `afm_ebsd_aligned_surface_index.py` 与 `configs/afm_ebsd_aligned_surface_index_pt_highres60.json`，把已确认的 Pt high-resolution 60° AFM->SEM/IPF homography 作为固定输入，以 AFM `1024 x 1024` 高度网格为 reference 输出 surface-index 可视化。
-- 新流程明确区分普通 EBSD IPF-Z 与 AFM surface-normal crystal direction：AFM 提供逐像素表面法向，EBSD H5 orientation 提供晶体坐标框架，二者通过 `n_crystal = G @ n_sample` 耦合。
-- 已在本机 test 跑通，输出单独的 SEM+AFM overlay、AFM height、normalmap、mapped IPF-Z、surface-index、nearest `{hkl}` angle、Kikuchi+OHP bands、montage 和 3D surface-index 图；本地输出目录为 `outputs/afm_ebsd_aligned_surface_index_pt_highres60/`，不提交 GitHub。
+- 删除上一版错误的 `afm_ebsd_aligned_surface_index.py` 与 `configs/afm_ebsd_aligned_surface_index_pt_highres60.json`，该版跳过了显式的 `SEM display -> EBSD grid` 中间层，容易把 EBSD mapping 上下方向弄错。
+- 新增 `afm_sem_ebsd_standard_pipeline.py` 与 `configs/afm_sem_ebsd_standard_pipeline_pt_highres60.json`，标准化为 `AFM reference -> SEM display -> EBSD grid -> AFM-reference EBSD maps -> AFM normal -> surface index` 的完整流程。
+- Pt high-resolution 60° 当前确认使用 `SEM flipud display` 与 EBSD/IPF grid 同向的约束，即 `sem_display_to_ebsd_grid=raw`；selected point 从错误流程的 `row=483` 修正为 `row=236, col=448, idx=190664`。
+- 已在本机 test 跑通，输出 AFM-SEM alignment check、SEM-EBSD correspondence check、EBSD IPF/IQ/CI aligned to AFM reference、AFM normal、surface index、Kikuchi+OHP、montage 和 3D 图；本地输出目录为 `outputs/afm_sem_ebsd_standard_pipeline_pt_highres60/`，不提交 GitHub。
 
 ### 2026-07-22
 

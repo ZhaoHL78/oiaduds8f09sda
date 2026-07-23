@@ -1,0 +1,43 @@
+{
+  "output_dir": "outputs/afm_sem_ebsd_standard_pipeline_pt_highres60",
+  "random_seed": 20260723,
+  "afm": {
+    "path": "D:/EBSD project/3d数据/pt-afm/Pt-2high resolution.ibw",
+    "height_channel": "HeightRetrace",
+    "display_orientation": "rot90",
+    "height_unit_scale_to_um": 1000000.0,
+    "scan_size_um": 70.0,
+    "plane_level": true,
+    "normal_smooth_sigma_px": 1.0
+  },
+  "sem_ebsd": {
+    "h5_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217.edaxh5",
+    "h5_group": "20251217/Pt foil-high resolution/Area 8-60/OIM Map 1",
+    "up2_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217_Pt foil-high resolution_Area 8_OIM Map 1.up2",
+    "software_ipf_reference_path": "E:/ZHL/20251209Pt-EBSD MAP/pt-high resolution/60.bmp",
+    "sem_display_orientation": "flipud",
+    "sem_display_to_ebsd_grid": "raw",
+    "orientation_convention": "EDAX/OIM H5 Orientations were validated against software IPF-Z; use n_crystal = G @ n_sample for this project."
+  },
+  "afm_sem_alignment": {
+    "registration_report_path": "outputs/afm_sem_geometric_registration_pt_highres60/registration_report.json",
+    "matrix_direction": "AFM_display resized to SEM_display pixels -> SEM_display pixels"
+  },
+  "surface_index": {
+    "normal_frame_rotation": "polar_rotation_from_afm_to_sem_homography",
+    "image_row_derivative_sign": 1,
+    "normal_tilt_ref_deg": 16.0,
+    "hkl_angle_threshold_deg": 10.0
+  },
+  "selected_point": {
+    "afm_x_px": 610,
+    "afm_y_px": 370,
+    "fallback_to_quality_point_if_invalid": true
+  },
+  "visualization": {
+    "dpi": 220,
+    "overlay_alpha": 0.62,
+    "surface_overlay_alpha": 0.82,
+    "plot_3d_stride": 5
+  }
+}
