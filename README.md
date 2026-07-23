@@ -553,10 +553,8 @@
   5. 先确认 `SEM display -> EBSD grid` 的方向；Pt high-resolution 60° 当前使用 `SEM flipud display`，并且该 frame 与 H5/EDAX IPF-Z grid 同向，所以 `sem_display_to_ebsd_grid=raw`，不再把 SEM display 又翻回 raw SEM。
   6. 构造完整矩阵 `T_afm_reference_to_ebsd_grid = T_sem_display_to_ebsd_grid @ T_afm_resized_to_sem_display @ T_afm_reference_to_resized`。
   7. 用 backward sampling 把 EBSD IPF-Z、IQ、CI、phase、valid 和 orientation 先映射到 AFM reference 网格。
-  8. 从 line-corrected AFM height 中提取 AFM grain boundary response，并生成 AFM grain labels；这些 AFM grain labels 作为高分辨率 orientation 区域边界。
-  9. EBSD orientation 不直接用低分辨率像素边界切 AFM 图，而是在每个 AFM grain 内选取高 `CI * IQ` 的 EBSD 代表点，把该 orientation 赋给整个 AFM grain。
-  10. 在 AFM reference 网格中由 line-corrected height 计算 Scharr normalmap，再结合 AFM-grain-regularized EBSD orientation 计算 `n_crystal = G @ n_sample`。
-  11. 输出连续 surface-normal crystal direction、nearest `{hkl}` 角度诊断、`surface normal vs IPF-Z` 角度图和 3D surface-index 图。
+  8. 在 AFM reference 网格中由 line-corrected height 计算 Scharr normalmap，再结合已经映射到 AFM 的 EBSD orientation 计算 `n_crystal = G @ n_sample`。
+  9. 输出连续 surface-normal crystal direction、nearest `{hkl}` 角度诊断、`surface normal vs IPF-Z` 角度图和 3D surface-index 图。
 - 当前固定 test 配置：
   - 配置：`configs\afm_sem_ebsd_standard_pipeline_pt_highres60.json`
   - AFM: `D:\EBSD project\3d数据\pt-afm\Pt-2high resolution.ibw`
@@ -571,15 +569,10 @@
   - `figures\03_afm_to_sem_alignment_check.png`
   - `figures\04_sem_ebsd_correspondence_check.png`
   - `figures\05_ebsd_ipf_z_aligned_to_afm_reference.png`
-  - `figures\05b_afm_grain_labels_reference.png`
-  - `figures\05c_afm_grain_boundary_response.png`
-  - `figures\05d_ebsd_ipf_z_afm_grain_regularized.png`
-  - `figures\05e_afm_grain_boundaries_over_height.png`
   - `figures\06_ebsd_iq_aligned_to_afm_reference.png`
   - `figures\07_ebsd_ci_aligned_to_afm_reference.png`
   - `figures\08_afm_sample_normal_reference.png`
   - `figures\10_surface_index_afm_reference.png`
-  - `figures\10_surface_index_afm_reference_exact_1024px.png`
   - `figures\11_surface_index_over_afm_height_reference.png`
   - `figures\13_surface_normal_vs_ipf_z_angle_deg.png`
   - `figures\14_selected_kikuchi_ohp_bands.png`
@@ -589,10 +582,31 @@
   - `figures\17_afm_height_3d_gold_line_corrected.png`
   - `data\afm_reference_ebsd_mapping_and_surface_index.npz`
   - `data\standard_pipeline_metadata.json`
-  - `data\afm_grain_orientation_sources.csv`
   - `data\nearest_hkl_summary.csv`
 - `export_verified_kikuchi_ohp_overlay.py` 是固定的 H5/OHP/UP2 对应检查脚本。它复用 `export_publication_h5_kikuchi_bands.py` 中的 `normal_theta_rho+_yup` EDAX OHP 约定，并可在 `--up2-root` 下自动扫描同 count 的 UP2 候选，输出透明 Kikuchi、透明 OHP bands、overlay、候选 UP2 score 和 OHP convention score。
 - 这个流程的关键约束是：EBSD mapping 必须先被映射到 AFM reference，再做 AFM 法向和 crystal-frame surface index；不能跳过 `SEM display -> EBSD grid` 这层，不能从 IPF 彩色图反推 orientation，也不能把 H5 group 和 UP2 文件按名字相似度强行配对。
+
+### 18.2 AFM-EBSD 晶界精修与 IPF-boundary surface-index
+
+- `refine_afm_ebsd_boundaries.py` 是当前 AFM-EBSD 空间精修入口。它不重新做 LightGlue/SuperPoint，而是在已有 AFM-SEM 粗配准基础上做晶界驱动 residual refinement。
+- AFM 晶界提取固定为 `scharr_valley`：先用平滑后的 Scharr 倾角找大倾角候选带，再在候选带内部取局部高度最低的 valley centerline，避免把 facet 内部扫描条纹或坡壁误当晶界。
+- EBSD 晶界提取固定为 `ipf_color`：先由 H5 orientation 生成 EDAX-style IPF-Z map，再从 IPF map 的颜色不连续处提取晶界；不要从 IQ 灰度图提取 EBSD 晶界。IQ 只作为质量诊断图。
+- 输出约定：
+  - cyan：AFM Scharr-valley 晶界；
+  - magenta：EBSD IPF-Z map 提取晶界；
+  - yellow：二者重合区域。
+- 当前 Pt high-resolution 60° test 配置：
+  - 晶界精修配置：`configs\afm_ebsd_boundary_refine_pt_highres60.json`
+  - surface-index 配置：`configs\afm_ebsd_surface_index_pt_highres60_boundary_refined.json`
+  - 晶界精修输出：`outputs\pt_highres60_afm_ebsd_ipf_boundary_refinement\`
+  - surface-index 输出：`outputs\pt_highres60_afm_ebsd_surface_index_ipf_boundary_refined\`
+- 推荐运行顺序：
+  1. `python refine_afm_ebsd_boundaries.py --config configs\afm_ebsd_boundary_refine_pt_highres60.json`
+  2. 检查 `figures\02b_ebsd_boundary_on_ebsd_ipf.png`、`figures\03_homography_boundary_overlay.png` 和 `figures\06_homography_boundary_overlay_on_ebsd_ipf.png`。
+  3. `python afm_sem_ebsd_standard_pipeline.py --config configs\afm_ebsd_surface_index_pt_highres60_boundary_refined.json`
+  4. 检查 `figures\10_surface_index_afm_reference.png`、`figures\11_surface_index_over_afm_height_reference.png` 和 `figures\16_surface_index_3d.png`。
+- 当前 test 采用 `homography` 作为 surface-index 的 EBSD resampling transform，因为 IPF-boundary 精修后它的 global mean boundary error 和左下角 ROI error 都低于 residual affine；metadata 中保留了粗配准矩阵和 boundary-refined 矩阵，矩阵方向始终是 `AFM reference pixels -> EBSD grid coordinates (x=column, y=row)`。
+- 注意：IPF map 只用于提取 EBSD 晶界和可视化晶粒边界，不用于反推出 orientation。surface index 仍然使用 H5 原始 orientation matrix 与 AFM Scharr normal 计算。
 
 主要代码：
 
@@ -607,6 +621,7 @@
 - `align_pt_afm_sem_ipf.py`
 - `align_pt_highres60_afm.py`
 - `afm_sem_geometric_registration.py`
+- `refine_afm_ebsd_boundaries.py`
 - `afm_ebsd_surface_index.py`（legacy utility，不作为当前推荐入口）
 - `afm_sem_ebsd_standard_pipeline.py`
 - `export_verified_kikuchi_ohp_overlay.py`
@@ -852,9 +867,6 @@ python .\export_verified_kikuchi_ohp_overlay.py `
 - 在标准流程中加入 Gwyddion-like line median correction：raw height 保留为诊断图，line-corrected height 用于 AFM/SEM overlay、normal、surface-index 和 3D height view；本次 Pt high-resolution 60° line offset 约为 `-0.0133` 到 `+0.0129 um`。
 - 标准流程改用 `candidate_all_point_homography_14pts` 作为当前 AFM-SEM 基线配准，控制点 RMSE `3.71 px`、median `3.03 px`、95th percentile `6.36 px`，比 RANSAC 版本更照顾左下角晶界，但仍在 metadata 中保留局部残差。
 - 新增 `surface normal vs conventional IPF-Z` 角度图，避免 surface-index RGB 在同一晶粒内颜色变化不明显时误判为“AFM slope 没有进入晶体学计算”。
-- 标准流程新增 AFM-grain-regularized orientation：从 line-destriped AFM height 提取 4 个 AFM grain labels，AFM grain boundary 作为高分辨率 orientation 区域边界；每个 AFM grain 内使用 `highest_ci_iq` 的 EBSD 代表点提供 orientation。
-- Surface index 主输出现在使用 AFM-grain-regularized orientation，并额外保存 exact-resolution PNG `figures\10_surface_index_afm_reference_exact_1024px.png`，像素尺寸与 AFM 原始 reference 网格一致。
-- 本机 Pt high-resolution 60° test 的 AFM grain segmentation 参数为 `boundary_response_percentile=78`、`boundary_close_px=5`、`boundary_dilate_px=2`、`min_grain_area_px=20000`；本次有效 AFM+EBSD 区域比例为 `0.9825`。
 
 ### 2026-07-22
 

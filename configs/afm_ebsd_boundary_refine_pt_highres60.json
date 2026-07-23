@@ -1,0 +1,64 @@
+{
+  "output_dir": "outputs/pt_highres60_afm_ebsd_ipf_boundary_refinement",
+  "source_config": "configs/afm_ebsd_surface_index_pt_highres60_scharr.json",
+  "coarse_surface_metadata": "outputs/pt_highres60_afm_ebsd_surface_index_scharr/data/standard_pipeline_metadata.json",
+  "control_points_path": "outputs/pt_highres60_afm_ebsd_ipf_boundary_refinement/control_points_afm_ebsd.json",
+  "afm_boundary": {
+    "method": "scharr_valley",
+    "scharr_smooth_sigma_px": 9.0,
+    "scharr_percentile": 94.0,
+    "scharr_close_px": 5,
+    "scharr_band_dilate_px": 8,
+    "valley_background_sigma_px": 28.0,
+    "valley_percentile_within_band": 24.0,
+    "valley_min_filter_px": 31,
+    "valley_min_tolerance_um": 0.026,
+    "valley_close_px": 2,
+    "smooth_sigma_px": 12.0,
+    "gradient_percentile": 95.5,
+    "sato_smooth_sigma_px": 5.0,
+    "sato_sigmas_px": [2, 4, 6, 8],
+    "sato_percentile": 98.5,
+    "morph_close_px": 5,
+    "dilate_px": 2,
+    "remove_small_objects_px": 650,
+    "skeletonize": true
+  },
+  "ebsd_boundary": {
+    "method": "ipf_color",
+    "ipf_smooth_sigma_px": 0.0,
+    "ipf_color_percentile": 97.2,
+    "ipf_min_color_delta": 0.1,
+    "misorientation_threshold_deg": 5.0,
+    "smooth_boundary_for_warp_px": 0.0,
+    "dilate_px": 1,
+    "remove_small_objects_px": 20
+  },
+  "optimization": {
+    "random_seed": 20260723,
+    "max_points_per_direction": 4500,
+    "residual_translation_bound_ebsd_px": 24.0,
+    "residual_rotation_bound_deg": 3.0,
+    "residual_log_scale_bound": 0.035,
+    "residual_shear_bound": 0.04,
+    "residual_projective_bound": 0.00008,
+    "max_nfev_affine": 180,
+    "max_nfev_homography": 240,
+    "huber_f_scale_px": 4.0,
+    "prefer_affine_if_homography_improvement_lt_fraction": 0.10
+  },
+  "metrics": {
+    "tolerance_px": [3, 5, 8],
+    "left_bottom_roi_xyxy_fraction": [0.0, 0.55, 0.38, 1.0],
+    "pixel_size_um": 0.06842619745845552
+  },
+  "visualization": {
+    "dpi": 220,
+    "boundary_overlay_dilate_px": 2,
+    "zoom_rois": {
+      "left_bottom": [0.0, 0.55, 0.38, 1.0],
+      "triple_junction": [0.32, 0.48, 0.70, 0.82],
+      "right_boundary": [0.70, 0.20, 1.0, 0.62]
+    }
+  }
+}

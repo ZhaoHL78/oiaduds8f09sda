@@ -1,5 +1,5 @@
 {
-  "output_dir": "outputs/afm_sem_ebsd_standard_pipeline_pt_highres60",
+  "output_dir": "outputs/pt_highres60_afm_ebsd_surface_index_scharr",
   "random_seed": 20260723,
   "afm": {
     "path": "D:/EBSD project/3d数据/pt-afm/Pt-2high resolution.ibw",
@@ -8,18 +8,17 @@
     "height_unit_scale_to_um": 1000000.0,
     "scan_size_um": 70.0,
     "plane_level": true,
-    "normal_smooth_sigma_px": 1.0,
+    "normal_smooth_sigma_px": 0.0,
     "line_median_correction": {
-      "enabled": true,
+      "enabled": false,
       "axis": "row",
-      "smooth_sigma_px": 25.0,
-      "note": "Gwyddion-like line-level correction: subtract only high-frequency row median offsets before normal/3D rendering."
+      "smooth_sigma_px": 25.0
     }
   },
   "sem_ebsd": {
     "h5_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217.edaxh5",
     "h5_group": "20251217/Pt foil-high resolution/Area 8-60/OIM Map 1",
-    "up2_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217_Pt foil-high resolution_Area 4_OIM Map 1.up2",
+    "up2_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217_Pt foil-high resolution_Area 8_OIM Map 1.up2",
     "software_ipf_reference_path": "E:/ZHL/20251209Pt-EBSD MAP/pt-high resolution/60.bmp",
     "sem_display_orientation": "flipud",
     "sem_display_to_ebsd_grid": "raw",
