@@ -540,6 +540,44 @@
   - `nearest_hkl_counts.csv`
   - `afm_ebsd_surface_index_metadata.json`
 
+### 18.1 Pt high-resolution 60° aligned AFM-reference surface index
+
+- `afm_ebsd_aligned_surface_index.py` 是当前推荐的 Pt high-resolution 60° AFM/EBSD surface-index 可视化入口。
+- 这个脚本只使用已经确认的 AFM->SEM/IPF homography 结果，不重新做 AFM/SEM 配准，也不使用 IPF 彩图反推 orientation。
+- 当前固定输入：
+  - AFM: `D:\EBSD project\3d数据\pt-afm\Pt-2high resolution.ibw`
+  - EBSD H5: `E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217.edaxh5`
+  - H5 group: `20251217/Pt foil-high resolution/Area 8-60/OIM Map 1`
+  - UP2: `E:\ZHL\EBSD-RAW\20251217Pt-high resolution\20251217_Pt foil-high resolution_Area 8_OIM Map 1.up2`
+  - align report: `outputs\afm_sem_geometric_registration_pt_highres60\registration_report.json`
+- 坐标定义：
+  - AFM `HeightRetrace` 先 `rot90` 到 AFM 软件显示方向，并保持 `1024 x 1024` 作为最终 reference grid。
+  - 使用 alignment report 中的 `AFM_display -> SEM_display` 3x3 homography，把每个 AFM 像素 backward sample 到 H5 SEM/IPF/EBSD grid。
+  - SEM display 使用用户确认的 `flipud` frame；输出 overlay 与 EDAX IPF-Z reference 同向。
+  - AFM 法向量在 AFM 物理坐标中由 Scharr 计算，再只使用 homography 的局部/整体平面旋转部分把法向表达进 EBSD display/sample 平面；homography 的 scale/shear 不参与高度梯度。
+  - EDAX H5 `Orientations` 已按软件 IPF-Z 验证，当前可视化采用 `n_crystal = G @ n_sample`。
+- 输出含义：
+  - `surface_index` 是连续的 crystal-frame surface-normal direction 颜色图，不等同于普通 EBSD IPF-Z。
+  - 最近 `{hkl}` 只作为辅助诊断，角度偏差较大时不应被当作严格 facet label。
+  - EBSD orientation 被映射到 AFM 网格只是空间耦合，不表示 EBSD 空间分辨率被提高。
+- 当前本机 test 已跑通，输出保存在 `outputs\afm_ebsd_aligned_surface_index_pt_highres60\`：
+  - `figures\01_sem_with_aligned_afm_height_overlay.png`
+  - `figures\02_sem_with_aligned_surface_index_overlay.png`
+  - `figures\03_afm_height_reference_selected.png`
+  - `figures\04_afm_normal_reference_selected.png`
+  - `figures\05_ebsd_ipf_z_mapped_to_afm_reference.png`
+  - `figures\06_surface_index_afm_reference_selected.png`
+  - `figures\07_surface_index_over_afm_height_reference.png`
+  - `figures\08_nearest_hkl_angle_reference.png`
+  - `figures\09_normal_azimuth_color_key.png`
+  - `figures\10_selected_kikuchi_ohp_bands.png`
+  - `figures\11_coupling_montage_like_reference.png`
+  - `figures\12_surface_index_3d.png`
+  - `figures\12_surface_index_3d_interactive.html`
+  - `data\aligned_surface_index_afm_reference_data.npz`
+  - `data\selected_point_and_surface_index_metadata.json`
+  - `data\nearest_hkl_summary.csv`
+
 主要代码：
 
 - `project_edax_oim_to_sphere.py`
@@ -554,6 +592,7 @@
 - `align_pt_highres60_afm.py`
 - `afm_sem_geometric_registration.py`
 - `afm_ebsd_surface_index.py`
+- `afm_ebsd_aligned_surface_index.py`
 - `visualize_edax_projection_sets.py`
 - `visualize_edax_match_3d.py`
 - `visualize_scan_position_pc_correction.py`
@@ -778,6 +817,13 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 
 ## 版本改动
 
+### 2026-07-23
+
+- 删除上一版错误的“大而全”AFM-EBSD fusion 工程代码：`afm_ebsd_fusion/`、`afm_ebsd_surface_index_pipeline.py`、`configs/afm_ebsd_surface_index_pt_highres60.json` 和 `tests/test_afm_ebsd_fusion_math.py`。
+- 新增 `afm_ebsd_aligned_surface_index.py` 与 `configs/afm_ebsd_aligned_surface_index_pt_highres60.json`，把已确认的 Pt high-resolution 60° AFM->SEM/IPF homography 作为固定输入，以 AFM `1024 x 1024` 高度网格为 reference 输出 surface-index 可视化。
+- 新流程明确区分普通 EBSD IPF-Z 与 AFM surface-normal crystal direction：AFM 提供逐像素表面法向，EBSD H5 orientation 提供晶体坐标框架，二者通过 `n_crystal = G @ n_sample` 耦合。
+- 已在本机 test 跑通，输出单独的 SEM+AFM overlay、AFM height、normalmap、mapped IPF-Z、surface-index、nearest `{hkl}` angle、Kikuchi+OHP bands、montage 和 3D surface-index 图；本地输出目录为 `outputs/afm_ebsd_aligned_surface_index_pt_highres60/`，不提交 GitHub。
+
 ### 2026-07-22
 
 - 新增 `export_pt_highres_data_overview.py`，用于把 Pt high-resolution 12 组 30° EBSD 数据的 H5/UP2/index/SEM/IPF/Kikuchi/OHP/PC/score 统一导出成总览图和索引表。
@@ -796,22 +842,6 @@ D:\anaconda3\envs\torch\python.exe .\afm_ebsd_surface_index.py `
 - 移除 `afm_sem_geometric_registration.py` 对旧 LightGlue/torch 脚本的 import，避免 Windows OpenMP runtime 冲突；新脚本只依赖 `numpy/scipy/opencv/scikit-image/matplotlib/h5py/igor2`。
 - 右上角继续补点后，14 对控制点使正式模型从 affine 切换为 homography。修正脚本逻辑：当全局模型为 homography 时，不再调用 affine-only distance refinement，避免 3x3 homography 被误当成 2x3 affine。
 - 当前正式 14 点 homography 矩阵为 `[[0.577732, 0.262868, 79.412139], [-0.161358, 0.942799, 48.373020], [-0.000033, 0.000283, 1.0]]`；另输出 `candidate_all_point_homography_14pts/` 作为全部控制点拟合候选，对照右上/左下 residual。
-
-### 10.5 AFM-reference EBSD surface-normal index fusion
-
-- 新增模块化流程 `afm_ebsd_surface_index_pipeline.py` 和 `afm_ebsd_fusion/`，目标是把 EBSD phase/orientation 映射到 AFM 原始高度网格，并用 AFM 逐像素 surface normal 计算 crystal-frame surface-normal direction。
-- 默认测试配置为 `configs/afm_ebsd_surface_index_pt_highres60.json`，输入为 Pt high-resolution 60° 的 AFM `Pt-2high resolution.ibw`、EDAX H5 `Area 8-60/OIM Map 1` 和刚刚人工控制点得到的 AFM->SEM homography。
-- 坐标和 orientation 约定被显式写入配置与报告：AFM raw height 先 `rot90` 成显示方向；SEM 使用 H5 `SEM-PRIAS Images/DATA/SEM` 的 `flipud` display frame；配准矩阵方向为 `AFM_display_resized -> SEM_display`；EDAX `Orientations` 确认为 `crystal_direction = G_sample_to_crystal @ sample_direction`。
-- 程序先复现 EDAX 软件 IPF-Z 作为 orientation convention 验证。当前 Pt high-resolution 60° 测试中，H5 IPF-Z 的最佳方向为 `raw`，与软件导出 `60.bmp` 的 mean_abs_rgb 为 `0.0355`，明显优于 `flipud/fliplr/rot180/transpose`。
-- AFM 法向默认用全局 plane leveling 后的 smoothed height 做局部平面拟合，Scharr/Gaussian derivative 作为不确定度对照。输出 `normal_sample`、`normal_crystal`、surface-normal IPF、nearest `{hkl}`、angle-to-{hkl}、quality masks、grain statistics 和逐像素 HDF5。
-- 注意：该 H5 group 没有 EDAX vendor grain ID 数据集。流程会从 phase + 低敏感量化 IPF connected components 派生保守 grain ID；这只用于防止跨边界平均，不等价于 OIM 原始 grain ID。
-- 运行方式：
-
-```bash
-python afm_ebsd_surface_index_pipeline.py --config configs/afm_ebsd_surface_index_pt_highres60.json
-```
-
-- 当前本机测试输出位于 `outputs/afm_ebsd_surface_index_pt_highres60/`，核心验证结果：round-trip median `0 deg`，平坦区域 surface-normal vs conventional IPF-Z median `0.49 deg`，有效 AFM+EBSD 像素比例 `0.981`。输出目录被 `.gitignore` 排除，不上传原始数据或生成图。
 
 ### 2026-07-21
 

@@ -1,0 +1,42 @@
+{
+  "output_dir": "outputs/afm_ebsd_aligned_surface_index_pt_highres60",
+  "random_seed": 20260723,
+  "afm": {
+    "path": "D:/EBSD project/3d数据/pt-afm/Pt-2high resolution.ibw",
+    "height_channel": "HeightRetrace",
+    "height_unit_scale_to_um": 1000000.0,
+    "display_orientation": "rot90",
+    "scan_size_um": 70.0,
+    "plane_level": true,
+    "normal_smooth_sigma_px": 1.0
+  },
+  "ebsd": {
+    "h5_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217.edaxh5",
+    "h5_group": "20251217/Pt foil-high resolution/Area 8-60/OIM Map 1",
+    "up2_path": "E:/ZHL/EBSD-RAW/20251217Pt-high resolution/20251217_Pt foil-high resolution_Area 8_OIM Map 1.up2",
+    "ipf_reference_path": "E:/ZHL/20251209Pt-EBSD MAP/pt-high resolution/60.bmp",
+    "orientation_convention": "EDAX/OIM H5 Orientations are used as sample-to-crystal matrices for this visualization: n_crystal = G @ n_sample."
+  },
+  "registration": {
+    "report_path": "outputs/afm_sem_geometric_registration_pt_highres60/registration_report.json",
+    "sem_display_orientation": "flipud",
+    "matrix_direction": "AFM display resized to SEM display -> SEM display"
+  },
+  "normal_frame": {
+    "use_homography_polar_rotation": true,
+    "image_row_derivative_sign": 1,
+    "note": "The AFM normal is computed in AFM display coordinates and only the in-plane rotation part of AFM->SEM alignment is applied before combining with EBSD orientation."
+  },
+  "selected_point": {
+    "afm_x_px": 610,
+    "afm_y_px": 370,
+    "fallback_to_quality_point_if_invalid": true
+  },
+  "visualization": {
+    "overlay_alpha": 0.68,
+    "normal_tilt_ref_deg": 16.0,
+    "surface_overlay_alpha": 0.82,
+    "plot_3d_stride": 5,
+    "dpi": 220
+  }
+}
